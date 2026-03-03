@@ -63,9 +63,8 @@ class RAGService:
                 self.tasks[task_id].percentage = 20.0
 
             # Process document
-            # Note: process_document_complete is sync in RAGAnything, but we'll call it here
-            # Ideally we'd wrap it in run_in_executor if it's very heavy
-            await asyncio.to_thread(self.rag.process_document_complete, file_path=file_path)
+            # process_document_complete IS async, so we must await it directly
+            await self.rag.process_document_complete(file_path=file_path)
 
             async with self._lock:
                 self.tasks[task_id].status = "completed"
