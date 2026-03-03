@@ -21,10 +21,13 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "fastapi>=0.133.1",
     "huggingface_hub",
     "lightrag-hku",
     "mineru[core]",
+    "python-multipart>=0.0.22",
     "tqdm",
+    "uvicorn>=0.41.0",
 ]
 
 [project.optional-dependencies]
