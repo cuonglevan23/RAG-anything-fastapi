@@ -18,6 +18,7 @@ class ProcessingStatus(BaseModel):
     status: str  # pending, parsing, indexing, completed, failed
     message: str
     percentage: float = 0.0
+    logs: List[str] = Field(default_factory=list)
     error: Optional[str] = None
 
 class UploadResponse(BaseModel):

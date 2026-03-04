@@ -57,26 +57,71 @@ class RAGService:
     async def process_document(self, task_id: str, file_path: str, filename: str):
         """Background task for processing document"""
         try:
+            # Step 1: Parsing
             async with self._lock:
-                self.tasks[task_id].status = "parsing"
-                self.tasks[task_id].message = "Parsing document..."
-                self.tasks[task_id].percentage = 20.0
+                task = self.tasks[task_id]
+                task.status = "parsing"
+                task.message = "Parsing document structure..."
+                task.percentage = 10.0
+                task.logs.append("Starting engine: Mineru Parsing...")
+            
+            # Using RAGAnything internal methods to have more control
+            await self.rag._ensure_lightrag_initialized()
+            
+            # Step 1.1: Parse document
+            content_list, content_based_doc_id = await self.rag.parse_document(file_path)
+            
+            async with self._lock:
+                task.percentage = 40.0
+                task.logs.append(f"Parsing complete. Found {len(content_list)} content blocks.")
+                task.status = "indexing"
+                task.message = "Indexing text content into LightRAG..."
 
-            # Process document
-            # process_document_complete IS async, so we must await it directly
-            await self.rag.process_document_complete(file_path=file_path)
+            # Step 2: Separate and Index Text
+            from raganything.utils import separate_content, insert_text_content
+            text_content, multimodal_items = separate_content(content_list)
+            
+            if text_content.strip():
+                file_name = self.rag._get_file_reference(file_path)
+                await insert_text_content(
+                    self.rag.lightrag,
+                    input=text_content,
+                    file_paths=file_name,
+                    ids=content_based_doc_id,
+                )
+                async with self._lock:
+                    task.percentage = 70.0
+                    task.logs.append("Text content successfully indexed.")
+
+            # Step 3: Multimodal Processing
+            if multimodal_items:
+                async with self._lock:
+                    task.message = f"Processing {len(multimodal_items)} multimodal items (images/tables)..."
+                    task.logs.append(f"Detected {len(multimodal_items)} multimodal elements.")
+                
+                # Set context if available
+                if hasattr(self.rag, "set_content_source_for_context"):
+                    self.rag.set_content_source_for_context(content_list, self.rag.config.content_format)
+                
+                await self.rag._process_multimodal_content(multimodal_items, self.rag._get_file_reference(file_path), content_based_doc_id)
+            else:
+                await self.rag._mark_multimodal_processing_complete(content_based_doc_id)
 
             async with self._lock:
-                self.tasks[task_id].status = "completed"
-                self.tasks[task_id].message = "Processing completed successfully."
-                self.tasks[task_id].percentage = 100.0
+                task = self.tasks[task_id]
+                task.status = "completed"
+                task.message = "Processing completed successfully."
+                task.percentage = 100.0
+                task.logs.append("Finalized indexing. System ready.")
                 
         except Exception as e:
             logger.error(f"Error processing document {filename}: {e}")
             async with self._lock:
-                self.tasks[task_id].status = "failed"
-                self.tasks[task_id].message = "Processing failed."
-                self.tasks[task_id].error = str(e)
+                task = self.tasks[task_id]
+                task.status = "failed"
+                task.message = "Processing failed."
+                task.logs.append(f"ERROR: {str(e)}")
+                task.error = str(e)
 
     def create_task(self, filename: str) -> str:
         """Create a new task and return its ID"""
