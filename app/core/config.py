@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # Storage
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     UPLOADS_DIR: Path = BASE_DIR / "uploads"
-    RAG_STORAGE_DIR: str = str(BASE_DIR / "rag_storage")
+    BASE_RAG_DIR: Path = BASE_DIR / "rag_storage"
     
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")

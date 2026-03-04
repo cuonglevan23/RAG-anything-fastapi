@@ -1,7 +1,7 @@
 import shutil
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException
-from app.models.schema import RagQueryRequest, QueryResponse, UploadResponse, ProcessingStatus
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from app.models.schema import QueryRequest, QueryResponse, UploadResponse, ProcessingStatus, ProjectListResponse
 from app.services.rag_service import rag_service
 from app.core.config import settings
 from loguru import logger
@@ -9,8 +9,12 @@ from loguru import logger
 router = APIRouter(prefix="/rag", tags=["RAG"])
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    """Upload and process a document"""
+async def upload_document(
+    background_tasks: BackgroundTasks, 
+    file: UploadFile = File(...),
+    project_id: str = Form(...)
+):
+    """Upload and process a document into a specific workspace"""
     # 1. Validate Extension
     extension = Path(file.filename).suffix.lower()
     if extension not in settings.ALLOWED_EXTENSIONS:
@@ -31,18 +35,20 @@ async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = 
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        task_id = rag_service.create_task(file.filename)
+        task_id = rag_service.create_task(file.filename, project_id)
         
         background_tasks.add_task(
             rag_service.process_document,
             task_id=task_id,
             file_path=str(file_path),
-            filename=file.filename
+            filename=file.filename,
+            project_id=project_id
         )
         
         return UploadResponse(
             task_id=task_id,
             filename=file.filename,
+            project_id=project_id,
             status="pending",
             message="File uploaded. Processing started in background."
         )
@@ -59,10 +65,14 @@ async def get_status(task_id: str):
     return status
 
 @router.post("/query", response_model=QueryResponse)
-async def query_rag(request: RagQueryRequest):
-    """Query the RAG system"""
+async def query_rag(request: QueryRequest):
+    """Query the RAG system within a specific workspace"""
     try:
-        response = await rag_service.query(request.query, mode=request.mode)
+        response = await rag_service.query(
+            project_id=request.project_id, 
+            query=request.query, 
+            mode=request.mode
+        )
         return QueryResponse(
             query=request.query,
             response=response,
@@ -71,3 +81,9 @@ async def query_rag(request: RagQueryRequest):
     except Exception as e:
         logger.error(f"Query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/projects", response_model=ProjectListResponse)
+async def list_projects():
+    """List all available workspaces/projects"""
+    projects = await rag_service.list_projects()
+    return ProjectListResponse(projects=projects)

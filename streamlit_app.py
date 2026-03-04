@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 
 # Configuration
-API_BASE_URL = "http://localhost:8000/api/v1/rag"
+# Default to local, but you should paste your Ngrok URL here (e.g., https://xxx.ngrok-free.app)
+API_BASE_URL = "https://a5af-34-143-214-246.ngrok-free.app"
+API_PREFIX = "/api/v1/rag"
 
 st.set_page_config(
     page_title="RAG Anything UI",
@@ -58,11 +60,50 @@ st.markdown("---")
 
 # Sidebar for configuration and info
 with st.sidebar:
-    st.header("Settings")
-    api_url = st.text_input("API Base URL", value=API_BASE_URL)
-    st.info("Ensure the FastAPI backend is running before using this UI.")
+    st.header("⚙️ Settings")
+    base_url = st.text_input("Ngrok/API Host", value=API_BASE_URL)
+    api_url = f"{base_url.rstrip('/')}{API_PREFIX}"
+    st.info(f"API Endpoint: {api_url}")
     
-    if st.button("Clear Chat History"):
+    st.markdown("---")
+    st.header("🗂️ Workspace Manager")
+    
+    # Fetch projects
+    try:
+        proj_resp = requests.get(f"{api_url}/projects")
+        if proj_resp.status_code == 200:
+            existing_projects = proj_resp.json().get("projects", [])
+        else:
+            existing_projects = []
+    except:
+        existing_projects = []
+
+    # New Project
+    new_project = st.text_input("Create New Project", placeholder="e.g. biology_book")
+    if st.button("➕ Create"):
+        if new_project:
+            # Simply selecting it will create it on first upload/query in backend
+            st.session_state.project_id = new_project
+            st.success(f"Project '{new_project}' ready!")
+            st.rerun()
+
+    # Select Project
+    if existing_projects:
+        selected_project = st.selectbox(
+            "Select Workspace", 
+            options=existing_projects,
+            index=existing_projects.index(st.session_state.get("project_id")) if st.session_state.get("project_id") in existing_projects else 0
+        )
+        st.session_state.project_id = selected_project
+    else:
+        st.warning("No projects found. Create one above!")
+        if "project_id" not in st.session_state:
+            st.session_state.project_id = "default"
+
+    st.markdown(f"**Current Workspace:** `{st.session_state.project_id}`")
+    
+    st.markdown("---")
+    if st.button("🗑️ Clear Chat History"):
         st.session_state.messages = []
         st.rerun()
 
@@ -78,7 +119,8 @@ with tab1:
             with st.status("Uploading file...", expanded=True) as status:
                 try:
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                    response = requests.post(f"{api_url}/upload", files=files)
+                    data_payload = {"project_id": st.session_state.project_id}
+                    response = requests.post(f"{api_url}/upload", files=files, data=data_payload)
                     
                     if response.status_code == 200:
                         data = response.json()
@@ -144,7 +186,11 @@ with tab2:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    payload = {"query": prompt, "mode": "hybrid"}
+                    payload = {
+                        "query": prompt, 
+                        "mode": "hybrid",
+                        "project_id": st.session_state.project_id
+                    }
                     response = requests.post(f"{api_url}/query", json=payload)
                     
                     if response.status_code == 200:

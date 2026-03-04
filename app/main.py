@@ -9,7 +9,6 @@ from loguru import logger
 async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Starting {settings.PROJECT_NAME}...")
-    await rag_service.initialize()
     yield
     # Shutdown
     await rag_service.finalize()
