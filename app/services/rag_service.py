@@ -25,8 +25,10 @@ class RAGService:
 
             logger.info(f"Initializing RAGAnything instance for project: {project_id}")
             
-            project_dir = str(settings.BASE_RAG_DIR / project_id)
+            project_dir = os.path.abspath(settings.BASE_RAG_DIR / project_id)
             os.makedirs(project_dir, exist_ok=True)
+            
+            logger.info(f"📁 PROJECT STORAGE PATH: {project_dir}")
             
             config = RAGAnythingConfig(
                 working_dir=project_dir,

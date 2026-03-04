@@ -87,12 +87,19 @@ with st.sidebar:
             st.success(f"Project '{new_project}' ready!")
             st.rerun()
 
+    # Ensure currently selected project is in list even if not on disk yet
+    if "project_id" in st.session_state and st.session_state.project_id not in existing_projects:
+        existing_projects.append(st.session_state.project_id)
+
     # Select Project
     if existing_projects:
+        # Sort for better UI
+        existing_projects.sort()
+        
         selected_project = st.selectbox(
             "Select Workspace", 
             options=existing_projects,
-            index=existing_projects.index(st.session_state.get("project_id")) if st.session_state.get("project_id") in existing_projects else 0
+            index=existing_projects.index(st.session_state.project_id) if st.session_state.get("project_id") in existing_projects else 0
         )
         st.session_state.project_id = selected_project
     else:
