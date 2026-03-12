@@ -97,7 +97,11 @@ class RAGService:
                 task.logs.append(f"Found existing Markdown at {parsed_md_path}. Skipping VLM Parsing.")
             else:
                 task.logs.append("No Markdown found, processing PDF via VLM to generate markdown...")
-                parsed_md_path = vlm_pipeline.process_pdf(file_path, output_dir, file_basename)
+                # Chạy process_pdf trong thread pool để không block FastAPI event loop (tránh timeout)
+                import asyncio
+                parsed_md_path = await asyncio.to_thread(
+                    vlm_pipeline.process_pdf, file_path, output_dir, file_basename
+                )
                 task.logs.append(f"VLM Parsing finished. Markdown created at: {parsed_md_path}")
 
             async with self._lock:
@@ -166,6 +170,11 @@ class RAGService:
     async def query(self, project_id: str, query: str, mode: str = "hybrid") -> str:
         """Execute RAG query within a specific project"""
         rag = await self.get_instance(project_id)
-        return await rag.aquery(query=query, mode=mode)
+        return await rag.aquery(
+            query=query, 
+            mode=mode, 
+            top_k=100, 
+            response_type="Structured List"
+        )
 
 rag_service = RAGService()
