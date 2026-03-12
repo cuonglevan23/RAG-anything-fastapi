@@ -2,12 +2,15 @@ import streamlit as st
 import requests
 import time
 import os
+import json
+import pandas as pd
 from pathlib import Path
 
+# ============================================================
 # Configuration
-# Default to local, but you should paste your Ngrok URL here (e.g., https://xxx.ngrok-free.app)
+# ============================================================
 API_BASE_URL = "https://a5af-34-143-214-246.ngrok-free.app"
-API_PREFIX = "/api/v1/rag"
+API_PREFIX   = "/api/v1/rag"
 
 st.set_page_config(
     page_title="RAG Anything UI",
@@ -16,90 +19,72 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS for premium look
+# ============================================================
+# Custom CSS
+# ============================================================
 st.markdown("""
     <style>
-    .main {
-        background-color: #0e1117;
-        color: #ffffff;
-    }
+    .main { background-color: #0e1117; color: #ffffff; }
     .stButton>button {
-        width: 100%;
-        border-radius: 5px;
-        height: 3em;
-        background-color: #262730;
-        color: white;
-        border: 1px solid #4a4a4a;
+        width: 100%; border-radius: 5px; height: 3em;
+        background-color: #262730; color: white; border: 1px solid #4a4a4a;
     }
-    .stButton>button:hover {
-        border-color: #ff4b4b;
-        color: #ff4b4b;
-    }
-    .status-box {
-        padding: 20px;
-        border-radius: 10px;
-        background-color: #1e1e1e;
-        border: 1px solid #333;
-        margin-bottom: 20px;
-    }
+    .stButton>button:hover { border-color: #ff4b4b; color: #ff4b4b; }
     .log-container {
         font-family: 'Courier New', Courier, monospace;
-        background-color: #000;
-        color: #0f0;
-        padding: 10px;
-        border-radius: 5px;
-        height: 200px;
-        overflow-y: auto;
-        font-size: 0.8em;
+        background-color: #000; color: #0f0;
+        padding: 10px; border-radius: 5px;
+        height: 200px; overflow-y: auto; font-size: 0.8em;
     }
+    .metric-card {
+        background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
+        border: 1px solid #444; border-radius: 12px;
+        padding: 18px; text-align: center;
+    }
+    .metric-score { font-size: 2.5em; font-weight: bold; }
+    .score-good  { color: #00d26a; }
+    .score-ok    { color: #f7c948; }
+    .score-poor  { color: #ff4b4b; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🤖 RAG Anything - Production UI")
+st.title("🤖 RAG Anything — Production UI")
 st.markdown("---")
 
-# Sidebar for configuration and info
+# ============================================================
+# Sidebar
+# ============================================================
 with st.sidebar:
     st.header("⚙️ Settings")
     base_url = st.text_input("Ngrok/API Host", value=API_BASE_URL)
-    api_url = f"{base_url.rstrip('/')}{API_PREFIX}"
-    st.info(f"API Endpoint: {api_url}")
-    
+    api_url  = f"{base_url.rstrip('/')}{API_PREFIX}"
+    st.info(f"API: {api_url}")
+
     st.markdown("---")
     st.header("🗂️ Workspace Manager")
-    
-    # Fetch projects
+
     try:
-        proj_resp = requests.get(f"{api_url}/projects")
-        if proj_resp.status_code == 200:
-            existing_projects = proj_resp.json().get("projects", [])
-        else:
-            existing_projects = []
+        proj_resp        = requests.get(f"{api_url}/projects", timeout=5)
+        existing_projects = proj_resp.json().get("projects", []) if proj_resp.status_code == 200 else []
     except:
         existing_projects = []
 
-    # New Project
-    new_project = st.text_input("Create New Project", placeholder="e.g. biology_book")
+    new_project = st.text_input("Create New Project", placeholder="e.g. legal_docs")
     if st.button("➕ Create"):
         if new_project:
-            # Simply selecting it will create it on first upload/query in backend
             st.session_state.project_id = new_project
             st.success(f"Project '{new_project}' ready!")
             st.rerun()
 
-    # Ensure currently selected project is in list even if not on disk yet
     if "project_id" in st.session_state and st.session_state.project_id not in existing_projects:
         existing_projects.append(st.session_state.project_id)
 
-    # Select Project
     if existing_projects:
-        # Sort for better UI
         existing_projects.sort()
-        
         selected_project = st.selectbox(
-            "Select Workspace", 
-            options=existing_projects,
-            index=existing_projects.index(st.session_state.project_id) if st.session_state.get("project_id") in existing_projects else 0
+            "Select Workspace", options=existing_projects,
+            index=existing_projects.index(st.session_state.project_id)
+                  if st.session_state.get("project_id") in existing_projects else 0
         )
         st.session_state.project_id = selected_project
     else:
@@ -108,52 +93,56 @@ with st.sidebar:
             st.session_state.project_id = "default"
 
     st.markdown(f"**Current Workspace:** `{st.session_state.project_id}`")
-    
     st.markdown("---")
     if st.button("🗑️ Clear Chat History"):
         st.session_state.messages = []
         st.rerun()
 
-# Tabs for different functionalities
-tab1, tab2 = st.tabs(["📤 Upload & Process", "💬 Chat with RAG"])
+# ============================================================
+# 3 TABS
+# ============================================================
+tab1, tab2, tab3 = st.tabs(["📤 Upload & Process", "💬 Chat with RAG", "📊 Evaluate (RAGAS)"])
 
+# ============================================================================
+# TAB 1 — Upload & Process
+# ============================================================================
 with tab1:
     st.header("Document Upload")
-    uploaded_file = st.file_uploader("Choose a file (PDF, TXT, DOCX, MD, Images)", type=["pdf", "txt", "docx", "md", "png", "jpg", "jpeg"])
-    
+    uploaded_file = st.file_uploader(
+        "Choose a file (PDF, TXT, DOCX, MD, Images)",
+        type=["pdf", "txt", "docx", "md", "png", "jpg", "jpeg"]
+    )
+
     if uploaded_file is not None:
         if st.button("🚀 Start Processing"):
             with st.status("Uploading file...", expanded=True) as status:
                 try:
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                    files        = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
                     data_payload = {"project_id": st.session_state.project_id}
-                    response = requests.post(f"{api_url}/upload", files=files, data=data_payload)
-                    
+                    response     = requests.post(f"{api_url}/upload", files=files, data=data_payload)
+
                     if response.status_code == 200:
-                        data = response.json()
+                        data    = response.json()
                         task_id = data["task_id"]
                         st.success(f"File uploaded! Task ID: {task_id}")
-                        
-                        # Polling for status
-                        progress_bar = st.progress(0, text="Initializing processing...")
+
+                        progress_bar    = st.progress(0, text="Initializing processing...")
                         log_placeholder = st.empty()
-                        
+
                         while True:
                             status_resp = requests.get(f"{api_url}/status/{task_id}")
                             if status_resp.status_code == 200:
-                                s_data = status_resp.json()
-                                percentage = s_data.get("percentage", 0) / 100
+                                s_data         = status_resp.json()
+                                percentage     = s_data.get("percentage", 0) / 100
                                 current_status = s_data.get("status")
-                                logs = s_data.get("logs", [])
-                                
+                                logs           = s_data.get("logs", [])
+
                                 progress_bar.progress(percentage, text=f"Status: {s_data.get('message')}")
-                                
-                                # Show logs
                                 with log_placeholder.container():
                                     st.markdown("**Processing Logs:**")
                                     log_html = "".join([f"<div>> {log}</div>" for log in logs])
                                     st.markdown(f'<div class="log-container">{log_html}</div>', unsafe_allow_html=True)
-                                
+
                                 if current_status == "completed":
                                     st.balloons()
                                     status.update(label="Processing Complete!", state="complete", expanded=False)
@@ -162,8 +151,7 @@ with tab1:
                                     st.error(f"Processing failed: {s_data.get('error')}")
                                     status.update(label="Processing Failed", state="error", expanded=True)
                                     break
-                            
-                            time.sleep(2) # Poll every 2 seconds
+                            time.sleep(2)
                     else:
                         st.error(f"Error: {response.text}")
                         status.update(label="Upload Failed", state="error")
@@ -171,18 +159,19 @@ with tab1:
                     st.error(f"Connection Error: {str(e)}")
                     status.update(label="Connection Error", state="error")
 
+# ============================================================================
+# TAB 2 — Chat with RAG
+# ============================================================================
 with tab2:
     st.header("Query the RAG Engine")
 
-    # --- Mode Selector ---
     MODE_DESCRIPTIONS = {
         "hybrid": "🔀 Hybrid — Kết hợp Graph + Vector. Tốt cho câu hỏi tổng hợp.",
         "local":  "📍 Local   — Tìm theo vector chunk. Tốt cho truy vấn nguyên văn điều luật cụ thể.",
         "global": "🌐 Global  — Tìm trên Knowledge Graph. Tốt cho câu hỏi khái niệm, mối quan hệ.",
-        "naive":  "📄 Naive   — Truy vấn thảng vào text chunk, không dùng Graph.",
+        "naive":  "📄 Naive   — Truy vấn thẳng vào text chunk, không dùng Graph.",
     }
-    mode_options = list(MODE_DESCRIPTIONS.keys())
-
+    mode_options  = list(MODE_DESCRIPTIONS.keys())
     selected_mode = st.radio(
         "🎛️ Chọn chế độ Query:",
         options=mode_options,
@@ -194,42 +183,323 @@ with tab2:
     st.session_state.query_mode = selected_mode
     st.markdown("---")
 
-    # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Display chat messages from history on app rerun
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # React to user input
     if prompt := st.chat_input("Ask anything about your documents..."):
-        # Display user message in chat message container
         st.chat_message("user").markdown(prompt)
-        # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
             with st.spinner(f"Thinking... (mode: {st.session_state.query_mode})"):
                 try:
-                    payload = {
-                        "query": prompt,
-                        "mode": st.session_state.query_mode,
-                        "project_id": st.session_state.project_id
-                    }
+                    payload  = {"query": prompt, "mode": st.session_state.query_mode, "project_id": st.session_state.project_id}
                     response = requests.post(f"{api_url}/query", json=payload)
-
                     if response.status_code == 200:
                         full_response = response.json().get("response", "No response received.")
                         st.markdown(full_response)
-                        # Add assistant response to chat history
                         st.session_state.messages.append({"role": "assistant", "content": full_response})
                     else:
                         st.error(f"API Error: {response.status_code}")
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
 
-st.markdown("---")
-st.caption("Powered by RAG Anything, Mineru & LightRAG")
+# ============================================================================
+# TAB 3 — Evaluate (RAGAS)
+# ============================================================================
+with tab3:
+    st.header("📊 RAGAS Evaluation")
+    st.markdown("""
+    Đánh giá chất lượng hệ thống RAG theo 4 metrics của RAGAS:
+    **Faithfulness** · **Answer Relevancy** · **Context Recall** · **Context Precision**
 
+    **Cách dùng:**
+    1. Nhập các cặp câu hỏi + câu trả lời chuẩn (ground truth) vào bảng bên dưới
+    2. Nhấn **"🔍 Fetch RAG Answers"** → hệ thống tự chạy query và điền `answer` + `contexts`
+    3. Nhấn **"🚀 Run RAGAS"** → xem điểm đánh giá chi tiết
+    """)
+    st.markdown("---")
+
+    # ── 3.1: OpenAI Key for RAGAS judge ──────────────────────────────────────
+    with st.expander("🔑 OpenAI API Key (dùng để RAGAS chấm điểm)", expanded=False):
+        ragas_openai_key = st.text_input(
+            "OpenAI API Key", type="password",
+            placeholder="sk-...",
+            help="RAGAS dùng GPT-4o-mini để chấm điểm. Chỉ cần nhập khi chạy evaluation.",
+            key="ragas_openai_key"
+        )
+
+    # ── 3.2: Query mode for fetching answers ────────────────────────────────
+    col_mode, col_info = st.columns([1, 2])
+    with col_mode:
+        eval_mode = st.selectbox(
+            "Query Mode khi fetch answers:",
+            options=["hybrid", "local", "global", "naive"],
+            index=0,
+            key="eval_query_mode"
+        )
+    with col_info:
+        st.info("ℹ️ Contexts được thu thập qua `naive` mode (raw chunks), answer qua mode đã chọn.")
+
+    st.markdown("---")
+
+    # ── 3.3: Dataset editor ─────────────────────────────────────────────────
+    st.subheader("📝 Test Dataset")
+    st.caption("Nhập câu hỏi và câu trả lời chuẩn. Cột `answer` và `contexts` sẽ được tự động điền.")
+
+    # Default empty dataset
+    if "eval_dataset" not in st.session_state:
+        st.session_state.eval_dataset = pd.DataFrame({
+            "question":     ["", "", ""],
+            "ground_truth": ["", "", ""],
+            "answer":       ["", "", ""],
+            "contexts":     ["", "", ""],
+            "status":       ["⬜ Chưa fetch", "⬜ Chưa fetch", "⬜ Chưa fetch"],
+        })
+
+    col_add, col_clear, col_import, col_export = st.columns(4)
+
+    with col_add:
+        if st.button("➕ Thêm dòng"):
+            new_row = pd.DataFrame({
+                "question": [""], "ground_truth": [""],
+                "answer": [""], "contexts": [""], "status": ["⬜ Chưa fetch"]
+            })
+            st.session_state.eval_dataset = pd.concat(
+                [st.session_state.eval_dataset, new_row], ignore_index=True
+            )
+            st.rerun()
+
+    with col_clear:
+        if st.button("🗑️ Xóa tất cả"):
+            st.session_state.eval_dataset = pd.DataFrame({
+                "question": [""], "ground_truth": [""],
+                "answer": [""], "contexts": [""], "status": ["⬜ Chưa fetch"]
+            })
+            st.rerun()
+
+    with col_import:
+        uploaded_csv = st.file_uploader("📥 Import CSV", type=["csv"], label_visibility="collapsed", key="csv_import")
+        if uploaded_csv:
+            imported = pd.read_csv(
+                uploaded_csv,
+                engine="python",           # Python engine xử lý encoding tốt hơn
+                on_bad_lines="skip",       # Bỏ qua dòng lỗi thay vì crash
+                quotechar='"',
+                encoding="utf-8-sig",      # Hỗ trợ BOM (UTF-8 with BOM từ Excel/export)
+            )
+            for col in ["answer", "contexts", "status"]:
+                if col not in imported.columns:
+                    imported[col] = "" if col != "status" else "⬜ Chưa fetch"
+            st.session_state.eval_dataset = imported
+            st.success(f"Imported {len(imported)} rows!")
+            st.rerun()
+
+    with col_export:
+        csv_data = st.session_state.eval_dataset.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("📤 Export CSV", data=csv_data, file_name="eval_dataset.csv", mime="text/csv")
+
+    # Editable table — only question and ground_truth editable by user
+    edited_df = st.data_editor(
+        st.session_state.eval_dataset[["question", "ground_truth", "status"]],
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "question":     st.column_config.TextColumn("❓ Câu hỏi", width="large"),
+            "ground_truth": st.column_config.TextColumn("✅ Câu trả lời chuẩn (ground truth)", width="large"),
+            "status":       st.column_config.TextColumn("📌 Trạng thái", disabled=True, width="small"),
+        },
+        key="dataset_editor"
+    )
+
+    # Sync edited rows back
+    st.session_state.eval_dataset["question"]     = edited_df["question"]
+    st.session_state.eval_dataset["ground_truth"] = edited_df["ground_truth"]
+
+    st.markdown("---")
+
+    # ── 3.4: Fetch RAG Answers ───────────────────────────────────────────────
+    if st.button("🔍 Fetch RAG Answers", type="primary", use_container_width=True):
+        df = st.session_state.eval_dataset.copy()
+        valid_rows = df[df["question"].str.strip() != ""]
+
+        if valid_rows.empty:
+            st.warning("Vui lòng nhập ít nhất 1 câu hỏi!")
+        else:
+            progress = st.progress(0, text="Đang query RAG system...")
+            total    = len(valid_rows)
+
+            for i, (idx, row) in enumerate(valid_rows.iterrows()):
+                progress.progress((i) / total, text=f"Đang fetch {i+1}/{total}: {row['question'][:60]}...")
+                try:
+                    payload  = {
+                        "query":      row["question"],
+                        "mode":       eval_mode,
+                        "project_id": st.session_state.project_id,
+                    }
+                    resp = requests.post(f"{api_url}/query_eval", json=payload, timeout=180)
+
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.session_state.eval_dataset.at[idx, "answer"]   = data.get("answer", "")
+                        st.session_state.eval_dataset.at[idx, "contexts"] = " ||| ".join(data.get("contexts", []))
+                        st.session_state.eval_dataset.at[idx, "status"]   = "✅ Đã fetch"
+                    else:
+                        st.session_state.eval_dataset.at[idx, "status"] = f"❌ Lỗi {resp.status_code}"
+                except Exception as e:
+                    st.session_state.eval_dataset.at[idx, "status"] = f"❌ {str(e)[:40]}"
+
+            progress.progress(1.0, text="✅ Fetch hoàn tất!")
+            time.sleep(0.5)
+            st.rerun()
+
+    # Show current state of full dataset (with answer + contexts)
+    with st.expander("🔎 Xem đầy đủ bảng (cả answer & contexts)", expanded=False):
+        st.dataframe(st.session_state.eval_dataset, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── 3.5: Run RAGAS ──────────────────────────────────────────────────────
+    st.subheader("🚀 Run RAGAS Evaluation")
+
+    ready_rows = st.session_state.eval_dataset[
+        (st.session_state.eval_dataset["question"].str.strip() != "") &
+        (st.session_state.eval_dataset["answer"].str.strip() != "")
+    ]
+
+    if len(ready_rows) == 0:
+        st.info("👆 Fetch RAG answers trước, sau đó chạy RAGAS evaluation.")
+    else:
+        st.success(f"✅ {len(ready_rows)} câu hỏi đã sẵn sàng để evaluate.")
+
+        if st.button("📊 Run RAGAS", type="primary", use_container_width=True):
+            if not ragas_openai_key:
+                st.error("⚠️ Vui lòng nhập OpenAI API Key để RAGAS chạy được!")
+            else:
+                try:
+                    with st.spinner("⏳ Đang cài đặt RAGAS..."):
+                        import subprocess
+                        subprocess.run(["pip", "install", "-q", "ragas", "langchain-openai"], check=True)
+
+                    import os as _os
+                    _os.environ["OPENAI_API_KEY"] = ragas_openai_key
+
+                    from datasets import Dataset as HFDataset
+                    from ragas import evaluate
+                    from ragas.metrics import faithfulness, answer_relevancy, context_recall, context_precision
+                    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+                    # Prepare RAGAS dataset
+                    ragas_data = []
+                    for _, row in ready_rows.iterrows():
+                        contexts_list = [c.strip() for c in str(row["contexts"]).split("|||") if c.strip()]
+                        if not contexts_list:
+                            contexts_list = [row["answer"]]
+                        ragas_data.append({
+                            "question":     row["question"],
+                            "answer":       row["answer"],
+                            "contexts":     contexts_list,
+                            "ground_truth": row["ground_truth"],
+                        })
+
+                    ragas_dataset = HFDataset.from_list(ragas_data)
+
+                    llm        = ChatOpenAI(model="gpt-4o-mini", openai_api_key=ragas_openai_key)
+                    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=ragas_openai_key)
+
+                    with st.spinner(f"🧠 RAGAS đang chấm điểm {len(ragas_data)} câu hỏi..."):
+                        result = evaluate(
+                            dataset=ragas_dataset,
+                            metrics=[faithfulness, answer_relevancy, context_recall, context_precision],
+                            llm=llm,
+                            embeddings=embeddings,
+                            raise_exceptions=False,
+                        )
+
+                    # ── Display Results ─────────────────────────────────────
+                    st.success("🎉 Evaluation hoàn tất!")
+                    st.markdown("### 📈 Kết quả tổng hợp")
+
+                    scores = {
+                        "Faithfulness":       result.get("faithfulness",       0),
+                        "Answer Relevancy":   result.get("answer_relevancy",   0),
+                        "Context Recall":     result.get("context_recall",     0),
+                        "Context Precision":  result.get("context_precision",  0),
+                    }
+
+                    def score_color(s):
+                        if s >= 0.8: return "score-good"
+                        if s >= 0.5: return "score-ok"
+                        return "score-poor"
+
+                    def score_emoji(s):
+                        if s >= 0.8: return "🟢"
+                        if s >= 0.5: return "🟡"
+                        return "🔴"
+
+                    cols = st.columns(4)
+                    metric_info = {
+                        "Faithfulness":      "Câu trả lời có bịa thông tin không?",
+                        "Answer Relevancy":  "Câu trả lời có đúng trọng tâm không?",
+                        "Context Recall":    "Retrieved đủ ngữ cảnh không?",
+                        "Context Precision": "Context có nhiều nhiễu không?",
+                    }
+                    for col, (name, score) in zip(cols, scores.items()):
+                        color = score_color(score)
+                        emoji = score_emoji(score)
+                        col.markdown(f"""
+                        <div class="metric-card">
+                            <div style="font-size:0.85em; color:#aaa;">{emoji} {name}</div>
+                            <div class="metric-score {color}">{score:.3f}</div>
+                            <div style="font-size:0.75em; color:#888; margin-top:4px;">{metric_info[name]}</div>
+                        </div>""", unsafe_allow_html=True)
+
+                    overall = sum(scores.values()) / len(scores)
+                    grade   = "🟢 Excellent" if overall >= 0.8 else "🟡 Good" if overall >= 0.6 else "🟠 Fair" if overall >= 0.4 else "🔴 Poor"
+                    st.markdown(f"\n**Overall Score:** {overall:.3f} &nbsp;&nbsp; **Grade:** {grade}")
+
+                    # Progress bars
+                    st.markdown("### 📊 Chi tiết từng metric")
+                    for name, score in scores.items():
+                        st.metric(label=name, value=f"{score:.4f} ({score*100:.1f}%)")
+                        st.progress(min(score, 1.0))
+
+                    # Per-question table
+                    st.markdown("### 🔬 Kết quả từng câu hỏi")
+                    detail_df = result.to_pandas()
+                    st.dataframe(
+                        detail_df[["question", "faithfulness", "answer_relevancy", "context_recall", "context_precision"]],
+                        use_container_width=True,
+                    )
+
+                    # Download results
+                    result_csv = detail_df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        "💾 Download kết quả CSV",
+                        data=result_csv,
+                        file_name="ragas_results.csv",
+                        mime="text/csv",
+                    )
+
+                    # Top worst questions
+                    st.markdown("### ⚠️ Câu hỏi có Faithfulness thấp nhất (cần cải thiện)")
+                    worst = detail_df.sort_values("faithfulness").head(5)
+                    for _, row in worst.iterrows():
+                        with st.expander(f'❓ {str(row["question"])[:80]}... — Faithfulness: {row["faithfulness"]:.3f}'):
+                            st.write("**Answer:**", row.get("answer", ""))
+                            st.write("**Ground Truth:**", row.get("ground_truth", ""))
+
+                except ImportError as e:
+                    st.error(f"❌ Thiếu thư viện RAGAS: {e}. Hãy cài: `pip install ragas langchain-openai datasets`")
+                except Exception as e:
+                    st.error(f"❌ RAGAS evaluation lỗi: {str(e)}")
+
+# ============================================================
+# Footer
+# ============================================================
+st.markdown("---")
+st.caption("Powered by RAG Anything · LightRAG · RAGAS · GPT-4o")

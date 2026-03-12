@@ -16,6 +16,18 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "gpt-4o-mini"
 
+    # ============================================================
+    # Cohere Reranker Configuration
+    # Đặt RERANK_ENABLE=true trong .env để bật re-ranking
+    # ============================================================
+    RERANK_ENABLE: bool = os.getenv("RERANK_ENABLE", "false").lower() == "true"
+    COHERE_API_KEY: str = os.getenv("COHERE_API_KEY", "")
+    RERANK_MODEL: str = os.getenv("RERANK_MODEL", "rerank-v3.5")          # rerank-v3.5 | rerank-multilingual-v3.0
+    RERANK_BASE_URL: str = os.getenv("RERANK_BASE_URL", "https://api.cohere.com/v2/rerank")
+    RERANK_ENABLE_CHUNKING: bool = os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"  # True nếu doc dài (>4096 token)
+    RERANK_MAX_TOKENS_PER_DOC: int = int(os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096"))  # Token limit per doc
+    # ============================================================
+
     # Security
     ALLOWED_EXTENSIONS: set = {".pdf", ".txt", ".docx", ".png", ".jpg", ".jpeg", ".md"}
     MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB

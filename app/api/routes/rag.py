@@ -1,7 +1,10 @@
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
-from app.models.schema import QueryRequest, QueryResponse, UploadResponse, ProcessingStatus, ProjectListResponse
+from app.models.schema import (
+    QueryRequest, QueryResponse, UploadResponse, ProcessingStatus,
+    ProjectListResponse, EvalQueryRequest, EvalQueryResponse
+)
 from app.services.rag_service import rag_service
 from app.core.config import settings
 from loguru import logger
@@ -87,3 +90,26 @@ async def list_projects():
     """List all available workspaces/projects"""
     projects = await rag_service.list_projects()
     return ProjectListResponse(projects=projects)
+
+@router.post("/query_eval", response_model=EvalQueryResponse)
+async def query_eval(request: EvalQueryRequest):
+    """
+    Query the RAG system and return BOTH the synthesized answer AND raw retrieved contexts.
+    Used by the RAGAS Evaluation tab in Streamlit.
+    - answer   = hybrid/mix mode response (best quality)
+    - contexts = naive mode response split into paragraphs (raw retrieved chunks)
+    """
+    try:
+        result = await rag_service.query_with_context(
+            project_id=request.project_id,
+            query=request.query,
+            mode=request.mode,
+        )
+        return EvalQueryResponse(
+            query=result["query"],
+            answer=result["answer"],
+            contexts=result["contexts"],
+        )
+    except Exception as e:
+        logger.error(f"Eval query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

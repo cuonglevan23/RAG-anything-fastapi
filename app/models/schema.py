@@ -8,6 +8,18 @@ class QueryRequest(BaseModel):
     mode: str = "hybrid"  # local, global, hybrid, naive, mix
     context_id: Optional[str] = None
 
+class EvalQueryRequest(BaseModel):
+    """Request for evaluation query - returns answer + retrieved contexts for RAGAS"""
+    query: str
+    project_id: str
+    mode: str = "hybrid"
+
+class EvalQueryResponse(BaseModel):
+    """Response for evaluation - includes both answer and raw retrieved contexts"""
+    query: str
+    answer: str
+    contexts: List[str]  # Raw retrieved text passages (for RAGAS context metrics)
+
 class QueryResponse(BaseModel):
     query: str
     response: str

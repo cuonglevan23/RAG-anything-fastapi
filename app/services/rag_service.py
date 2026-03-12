@@ -1,6 +1,7 @@
 import os
 import uuid
 import asyncio
+from functools import partial
 from typing import Dict, Optional, Any
 from pathlib import Path
 from loguru import logger
@@ -9,6 +10,7 @@ from app.services.vlm_parser import CustomOpenAIPipeline
 from raganything import RAGAnything, RAGAnythingConfig
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
+from lightrag.rerank import cohere_rerank
 from app.core.config import settings
 from app.models.schema import ProcessingStatus
 # test comment for commit
@@ -65,19 +67,44 @@ Entity: Thư viện chuyên ngành | Type: concept | Description: ...
 Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
 """
 
+            # ============================================================
+            # Cohere Rerank 3.5 Configuration
+            # Để bật: set RERANK_ENABLE=true và COHERE_API_KEY trong .env
+            # LightRAG khuyến nghị dùng mode="mix" khi bật reranker.
+            # ============================================================
+            rerank_func = None
+            if settings.RERANK_ENABLE and settings.COHERE_API_KEY:
+                rerank_func = partial(
+                    cohere_rerank,
+                    model=settings.RERANK_MODEL,              # rerank-v3.5 | rerank-multilingual-v3.0
+                    api_key=settings.COHERE_API_KEY,          # Cohere API Key từ .env
+                    base_url=settings.RERANK_BASE_URL,        # https://api.cohere.com/v2/rerank (mặc định)
+                    enable_chunking=settings.RERANK_ENABLE_CHUNKING,      # True nếu tài liệu dài > 4096 token
+                    max_tokens_per_doc=settings.RERANK_MAX_TOKENS_PER_DOC # Token limit mỗi chunk (mặc định 4096)
+                )
+                logger.info(f"✅ Cohere Reranker enabled: model={settings.RERANK_MODEL}")
+            else:
+                logger.info("⚠️  Reranker disabled. Set RERANK_ENABLE=true + COHERE_API_KEY in .env to enable.")
+            # ============================================================
+
+            # Xây dựng lightrag_kwargs động để thêm rerank_model_func có điều kiện
+            lightrag_kwargs = {
+                "chunk_token_size": 600,          # Giảm từ 1200 → 600: mỗi Điều luật có chunk riêng
+                "chunk_overlap_token_size": 80,   # Overlap nhỏ để giữ ngữ cảnh liên Điều
+                "addon_params": {
+                    "insert_batch_size": 5,
+                    "language": "Vietnamese",
+                    "entity_extract_max_gleaning": 2,
+                }
+            }
+            if rerank_func:
+                lightrag_kwargs["rerank_model_func"] = rerank_func  # Bật Cohere Reranker
+
             rag = RAGAnything(
                 config=config,
                 llm_model_func=llm_model_func,
                 embedding_func=embedding_func,
-                lightrag_kwargs={
-                    "chunk_token_size": 600,          # Giảm từ 1200 → 600: mỗi Điều luật có chunk riêng
-                    "chunk_overlap_token_size": 80,   # Overlap nhỏ để giữ ngữ cảnh liên Điều
-                    "addon_params": {
-                        "insert_batch_size": 5,
-                        "language": "Vietnamese",
-                        "entity_extract_max_gleaning": 2,
-                    }
-                },
+                lightrag_kwargs=lightrag_kwargs,
             )
             
             await rag._ensure_lightrag_initialized()
@@ -199,13 +226,68 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
         """Execute RAG query within a specific project"""
         rag = await self.get_instance(project_id)
         
+        # Khi reranker được bật, LightRAG khuyến nghị dùng mode='mix' để tối ưu hiệu suất
+        # Người dùng có thể ghi đè bằng cách chọn mode khác trên Streamlit
+        effective_mode = mode
+        if settings.RERANK_ENABLE and mode == "hybrid":
+            effective_mode = "mix"  # mix = hybrid + naive, tốt nhất khi có reranker
+            logger.info(f"Reranker active: auto-upgrade mode hybrid → mix")
+
         # Mode 'local' và 'naive' phù hợp truy vấn nguyên văn (chunk-based)
-        # Mode 'hybrid' và 'global' phù hợp câu hỏi tổng hợp (graph-based)
+        # Mode 'hybrid'/'mix' phù hợp câu hỏi tổng hợp (graph-based)
         return await rag.aquery(
             query=query, 
-            mode=mode, 
+            mode=effective_mode, 
             top_k=100, 
             response_type="Structured List"
         )
+
+    async def query_with_context(self, project_id: str, query: str, mode: str = "hybrid") -> dict:
+        """
+        Execute RAG query and return BOTH the final answer and the retrieved raw contexts.
+        Used by the RAGAS evaluation tab.
+
+        Strategy:
+        - answer   = mode query (best quality synthesized answer)
+        - contexts = naive mode query (raw chunk-based retrieval, no graph synthesis)
+                     Naive mode returns content directly from vector chunks → best
+                     approximation of "retrieved passages" for RAGAS context metrics.
+        """
+        rag = await self.get_instance(project_id)
+
+        effective_mode = mode
+        if settings.RERANK_ENABLE and mode == "hybrid":
+            effective_mode = "mix"
+
+        # Run the main answer query
+        answer = await rag.aquery(
+            query=query,
+            mode=effective_mode,
+            top_k=100,
+            response_type="Structured List"
+        )
+
+        # Run naive query to get raw retrieved passages (contexts for RAGAS)
+        # Naive mode bypasses Knowledge Graph and returns raw chunks directly
+        try:
+            raw_context = await rag.aquery(
+                query=query,
+                mode="naive",
+                top_k=20,               # Fewer chunks, focus on most relevant
+                response_type="Multiple Paragraphs"
+            )
+            # Split into individual passages for RAGAS (expects List[str])
+            contexts = [p.strip() for p in raw_context.split("\n\n") if p.strip()]
+            if not contexts:
+                contexts = [raw_context]  # fallback: treat whole response as one context
+        except Exception as e:
+            logger.warning(f"Naive context retrieval failed: {e}. Using answer as context fallback.")
+            contexts = [answer]
+
+        return {
+            "query":    query,
+            "answer":   answer,
+            "contexts": contexts,
+        }
 
 rag_service = RAGService()
