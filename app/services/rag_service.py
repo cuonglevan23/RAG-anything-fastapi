@@ -110,7 +110,15 @@ class RAGService:
                 with open(parsed_md_path, "r", encoding="utf-8") as f:
                     md_text = f.read()
 
-                await rag.lightrag.ainsert(md_text)
+                from lightrag.utils import compute_mdhash_id
+                doc_id = compute_mdhash_id(md_text, prefix="doc-")
+                file_name = os.path.basename(file_path)
+
+                await rag.lightrag.ainsert(
+                    input=md_text,
+                    file_paths=file_name,
+                    ids=doc_id
+                )
                 
                 async with self._lock:
                     task.percentage = 70.0
