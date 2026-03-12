@@ -88,6 +88,7 @@ class RAGService:
             vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
             
             file_basename = os.path.splitext(os.path.basename(file_path))[0]
+            project_dir = os.path.abspath(settings.BASE_RAG_DIR / project_id)
             output_dir = project_dir # Save VLM outputs into the project dir
             
             parsed_md_path = os.path.join(output_dir, file_basename, "vlm", f"{file_basename}.md")
