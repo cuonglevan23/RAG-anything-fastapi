@@ -10,7 +10,7 @@ from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 from app.core.config import settings
 from app.models.schema import ProcessingStatus
-
+# test comment for commit
 class RAGService:
     def __init__(self):
         self.instances: Dict[str, RAGAnything] = {}
