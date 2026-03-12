@@ -70,10 +70,11 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
                 llm_model_func=llm_model_func,
                 embedding_func=embedding_func,
                 lightrag_kwargs={
+                    "chunk_token_size": 600,          # Giảm từ 1200 → 600: mỗi Điều luật có chunk riêng
+                    "chunk_overlap_token_size": 80,   # Overlap nhỏ để giữ ngữ cảnh liên Điều
                     "addon_params": {
                         "insert_batch_size": 5,
                         "language": "Vietnamese",
-                        # Ghi đè prompt trích xuất entity mặc định
                         "entity_extract_max_gleaning": 2,
                     }
                 },
