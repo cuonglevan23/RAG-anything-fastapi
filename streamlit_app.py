@@ -173,7 +173,27 @@ with tab1:
 
 with tab2:
     st.header("Query the RAG Engine")
-    
+
+    # --- Mode Selector ---
+    MODE_DESCRIPTIONS = {
+        "hybrid": "🔀 Hybrid — Kết hợp Graph + Vector. Tốt cho câu hỏi tổng hợp.",
+        "local":  "📍 Local   — Tìm theo vector chunk. Tốt cho truy vấn nguyên văn điều luật cụ thể.",
+        "global": "🌐 Global  — Tìm trên Knowledge Graph. Tốt cho câu hỏi khái niệm, mối quan hệ.",
+        "naive":  "📄 Naive   — Truy vấn thảng vào text chunk, không dùng Graph.",
+    }
+    mode_options = list(MODE_DESCRIPTIONS.keys())
+
+    selected_mode = st.radio(
+        "🎛️ Chọn chế độ Query:",
+        options=mode_options,
+        format_func=lambda m: MODE_DESCRIPTIONS[m],
+        horizontal=False,
+        index=mode_options.index(st.session_state.get("query_mode", "hybrid")),
+        key="query_mode_selector",
+    )
+    st.session_state.query_mode = selected_mode
+    st.markdown("---")
+
     # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -191,15 +211,15 @@ with tab2:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
+            with st.spinner(f"Thinking... (mode: {st.session_state.query_mode})"):
                 try:
                     payload = {
-                        "query": prompt, 
-                        "mode": "hybrid",
+                        "query": prompt,
+                        "mode": st.session_state.query_mode,
                         "project_id": st.session_state.project_id
                     }
                     response = requests.post(f"{api_url}/query", json=payload)
-                    
+
                     if response.status_code == 200:
                         full_response = response.json().get("response", "No response received.")
                         st.markdown(full_response)
@@ -212,3 +232,4 @@ with tab2:
 
 st.markdown("---")
 st.caption("Powered by RAG Anything, Mineru & LightRAG")
+

@@ -46,10 +46,37 @@ class RAGService:
                 func=lambda texts: openai_embed(texts, model=settings.EMBEDDING_MODEL, api_key=settings.OPENAI_API_KEY),
             )
 
+            # Custom extraction prompt: dạy LightRAG nhận diện "Điều X" là entity quan trọng
+            # và giữ lại nội dung nguyên văn thay vì tóm tắt.
+            LEGAL_ENTITY_EXTRACTION_PROMPT = """-Goal-
+Given a text document that may contain Vietnamese legal content (laws, decrees, regulations),
+identify all the entities and relationships needed to understand the document structure.
+
+-Instructions-
+1. ALWAYS treat each "Điều X" (Article/Clause number) as a PRIMARY ENTITY of type "legal_article".
+2. Extract the COMPLETE, VERBATIM content of each Điều as its description—DO NOT summarize or truncate.
+3. Identify relationships between Điều (e.g., "Điều 5 references Điều 12").
+4. For other entities (organizations, concepts, terms), extract normally.
+5. Use Vietnamese names exactly as they appear in the source text.
+
+-Example-
+Entity: Điều 12 | Type: legal_article | Description: <full verbatim text of Điều 12>
+Entity: Thư viện chuyên ngành | Type: concept | Description: ...
+Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
+"""
+
             rag = RAGAnything(
                 config=config,
                 llm_model_func=llm_model_func,
                 embedding_func=embedding_func,
+                lightrag_kwargs={
+                    "addon_params": {
+                        "insert_batch_size": 5,
+                        "language": "Vietnamese",
+                        # Ghi đè prompt trích xuất entity mặc định
+                        "entity_extract_max_gleaning": 2,
+                    }
+                },
             )
             
             await rag._ensure_lightrag_initialized()
@@ -170,6 +197,9 @@ class RAGService:
     async def query(self, project_id: str, query: str, mode: str = "hybrid") -> str:
         """Execute RAG query within a specific project"""
         rag = await self.get_instance(project_id)
+        
+        # Mode 'local' và 'naive' phù hợp truy vấn nguyên văn (chunk-based)
+        # Mode 'hybrid' và 'global' phù hợp câu hỏi tổng hợp (graph-based)
         return await rag.aquery(
             query=query, 
             mode=mode, 
