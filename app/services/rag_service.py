@@ -5,6 +5,7 @@ from typing import Dict, Optional, Any
 from pathlib import Path
 from loguru import logger
 
+from app.services.vlm_parser import CustomOpenAIPipeline
 from raganything import RAGAnything, RAGAnythingConfig
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
@@ -80,44 +81,46 @@ class RAGService:
                 task.message = "Parsing document structure..."
                 task.percentage = 10.0
                 task.logs.append(f"Starting engine: Mineru Parsing for project {project_id}...")
+            # Step 1.1: Parse document using VLM (GPT-4o)
+            task.logs.append(f"Starting engine: OpenAIPipeline (VLM) for project {project_id}...")
             
-            # Step 1.1: Parse document
-            content_list, content_based_doc_id = await rag.parse_document(file_path)
+            # Khởi tạo pipeline và process
+            vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
             
+            file_basename = os.path.splitext(os.path.basename(file_path))[0]
+            output_dir = project_dir # Save VLM outputs into the project dir
+            
+            parsed_md_path = os.path.join(output_dir, file_basename, "vlm", f"{file_basename}.md")
+            
+            if os.path.exists(parsed_md_path):
+                task.logs.append(f"Found existing Markdown at {parsed_md_path}. Skipping VLM Parsing.")
+            else:
+                task.logs.append("No Markdown found, processing PDF via VLM to generate markdown...")
+                parsed_md_path = vlm_pipeline.process_pdf(file_path, output_dir, file_basename)
+                task.logs.append(f"VLM Parsing finished. Markdown created at: {parsed_md_path}")
+
             async with self._lock:
                 task.percentage = 40.0
-                task.logs.append(f"Parsing complete. Found {len(content_list)} content blocks.")
                 task.status = "indexing"
-                task.message = "Indexing text content into LightRAG..."
+                task.message = "Indexing markdown content into LightRAG..."
 
-            # Step 2: Separate and Index Text
-            from raganything.utils import separate_content, insert_text_content
-            text_content, multimodal_items = separate_content(content_list)
-            
-            if text_content.strip():
-                file_name = rag._get_file_reference(file_path)
-                await insert_text_content(
-                    rag.lightrag,
-                    input=text_content,
-                    file_paths=file_name,
-                    ids=content_based_doc_id,
-                )
+            # Step 2: Index Text Content Directly
+            if os.path.exists(parsed_md_path):
+                with open(parsed_md_path, "r", encoding="utf-8") as f:
+                    md_text = f.read()
+
+                await rag.lightrag.ainsert(md_text)
+                
                 async with self._lock:
                     task.percentage = 70.0
-                    task.logs.append("Text content successfully indexed.")
-
-            # Step 3: Multimodal Processing
-            if multimodal_items:
-                async with self._lock:
-                    task.message = f"Processing {len(multimodal_items)} multimodal items..."
-                
-                if hasattr(rag, "set_content_source_for_context"):
-                    rag.set_content_source_for_context(content_list, rag.config.content_format)
-                
-                await rag._process_multimodal_content(multimodal_items, rag._get_file_reference(file_path), content_based_doc_id)
+                    task.logs.append("Markdown content successfully indexed into Knowledge Base.")
             else:
-                await rag._mark_multimodal_processing_complete(content_based_doc_id)
-
+                raise FileNotFoundError(f"Markdown file not found after processing: {parsed_md_path}")
+            
+            # Note: Multimodal blocks (Tables/Equations) are already converted to text 
+            # (HTML/LaTeX) within the markdown by VLM, so we don't need the legacy 
+            # separate multimodal extraction step from Mineru outputs here.
+            
             async with self._lock:
                 task = self.tasks[task_id]
                 task.status = "completed"
