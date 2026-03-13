@@ -97,6 +97,11 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
 
             # Xây dựng lightrag_kwargs động để thêm rerank_model_func có điều kiện
             lightrag_kwargs = {
+                # ✅ KEY FIX: workspace isolates ALL LightRAG in-memory namespaces per project.
+                # Without this, all projects default to workspace="" and share the same
+                # text_chunks / entities_vdb / chunks_vdb / pipeline_status namespace,
+                # causing cross-project query results even with different working_dirs.
+                "workspace": project_id,
                 "chunk_token_size": 600,          # Giảm từ 1200 → 600: mỗi Điều luật có chunk riêng
                 "chunk_overlap_token_size": 80,   # Overlap nhỏ để giữ ngữ cảnh liên Điều
                 "addon_params": {
