@@ -11,6 +11,8 @@ from raganything import RAGAnything, RAGAnythingConfig
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 from lightrag.rerank import cohere_rerank
+# set_default_workspace: đảm bảo LightRAG dùng đúng namespace cho từng project
+from lightrag.kg.shared_storage import set_default_workspace
 from app.core.config import settings
 from app.models.schema import ProcessingStatus
 # test comment for commit
@@ -30,6 +32,12 @@ class RAGService:
             
             project_dir = os.path.abspath(settings.BASE_RAG_DIR / project_id)
             os.makedirs(project_dir, exist_ok=True)
+            
+            # ✅ Scope LightRAG shared storage namespaces to THIS project
+            # Without this, all projects share the same pipeline_status / namespace
+            # causing cross-project data leakage when querying.
+            set_default_workspace(project_id)
+            logger.info(f"📰 Default workspace set to: {project_id}")
             
             logger.info(f"📁 PROJECT STORAGE PATH: {project_dir}")
             
@@ -224,6 +232,8 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
 
     async def query(self, project_id: str, query: str, mode: str = "hybrid") -> str:
         """Execute RAG query within a specific project"""
+        # Switch default workspace TRƯỚC khi query để tránh đọc nhầm project khác
+        set_default_workspace(project_id)
         rag = await self.get_instance(project_id)
         
         # Khi reranker được bật, LightRAG khuyến nghị dùng mode='mix' để tối ưu hiệu suất
@@ -246,13 +256,9 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
         """
         Execute RAG query and return BOTH the final answer and the retrieved raw contexts.
         Used by the RAGAS evaluation tab.
-
-        Strategy:
-        - answer   = mode query (best quality synthesized answer)
-        - contexts = naive mode query (raw chunk-based retrieval, no graph synthesis)
-                     Naive mode returns content directly from vector chunks → best
-                     approximation of "retrieved passages" for RAGAS context metrics.
         """
+        # Switch default workspace TRƯỚC khi query để tránh đọc nhầm project khác
+        set_default_workspace(project_id)
         rag = await self.get_instance(project_id)
 
         effective_mode = mode

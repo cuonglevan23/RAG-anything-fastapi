@@ -284,20 +284,31 @@ with tab3:
 
     with col_import:
         uploaded_csv = st.file_uploader("📥 Import CSV", type=["csv"], label_visibility="collapsed", key="csv_import")
-        if uploaded_csv:
-            imported = pd.read_csv(
-                uploaded_csv,
-                engine="python",           # Python engine xử lý encoding tốt hơn
-                on_bad_lines="skip",       # Bỏ qua dòng lỗi thay vì crash
-                quotechar='"',
-                encoding="utf-8-sig",      # Hỗ trợ BOM (UTF-8 with BOM từ Excel/export)
-            )
-            for col in ["answer", "contexts", "status"]:
-                if col not in imported.columns:
-                    imported[col] = "" if col != "status" else "⬜ Chưa fetch"
-            st.session_state.eval_dataset = imported
-            st.success(f"Imported {len(imported)} rows!")
-            st.rerun()
+        # Chỉ import khi file MỚI (tránh vòng lặp vô hạn do rerun giữ lại file uploader)
+        if uploaded_csv and st.session_state.get("_last_imported_csv") != uploaded_csv.name:
+            try:
+                imported = pd.read_csv(
+                    uploaded_csv,
+                    engine="python",
+                    on_bad_lines="skip",
+                    quotechar='"',
+                    encoding="utf-8-sig",
+                )
+                for col in ["answer", "contexts", "status"]:
+                    if col not in imported.columns:
+                        imported[col] = "" if col != "status" else "⬜ Chưa fetch"
+                st.session_state.eval_dataset = imported
+                # Ép kiểu tất cả cột về string để tránh lỗi .str accessor với NaN
+                for str_col in ["question", "ground_truth", "answer", "contexts", "status"]:
+                    if str_col in st.session_state.eval_dataset.columns:
+                        st.session_state.eval_dataset[str_col] = (
+                            st.session_state.eval_dataset[str_col].fillna("").astype(str)
+                        )
+                st.session_state._last_imported_csv = uploaded_csv.name  # Đánh dấu đã import
+                st.success(f"✅ Imported {len(imported)} rows từ '{uploaded_csv.name}'!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Lỗi đọc CSV: {e}")
 
     with col_export:
         csv_data = st.session_state.eval_dataset.to_csv(index=False).encode("utf-8-sig")
@@ -320,7 +331,33 @@ with tab3:
     st.session_state.eval_dataset["question"]     = edited_df["question"]
     st.session_state.eval_dataset["ground_truth"] = edited_df["ground_truth"]
 
+    # ── Xóa từng dòng ───────────────────────────────────────────────────────
+    df_cur = st.session_state.eval_dataset
+    non_empty = df_cur[df_cur["question"].astype(str).str.strip() != ""]
+
+    if not non_empty.empty:
+        # Tạo nhãn hiển thị dạng "Dòng 1: Câu hỏi..." cho multiselect
+        row_labels = {
+            idx: f"#{idx+1}: {str(row['question'])[:60]}..."
+            for idx, row in non_empty.iterrows()
+        }
+        selected_labels = st.multiselect(
+            "🗑️ Chọn dòng cần xóa:",
+            options=list(row_labels.keys()),
+            format_func=lambda i: row_labels[i],
+            placeholder="Chọn 1 hoặc nhiều dòng...",
+            key="rows_to_delete",
+        )
+        if selected_labels and st.button("❌ Xóa các dòng đã chọn", type="secondary"):
+            st.session_state.eval_dataset = (
+                st.session_state.eval_dataset
+                .drop(index=selected_labels)
+                .reset_index(drop=True)
+            )
+            st.rerun()
+
     st.markdown("---")
+
 
     # ── 3.4: Fetch RAG Answers ───────────────────────────────────────────────
     if st.button("🔍 Fetch RAG Answers", type="primary", use_container_width=True):
@@ -367,8 +404,10 @@ with tab3:
     st.subheader("🚀 Run RAGAS Evaluation")
 
     ready_rows = st.session_state.eval_dataset[
-        (st.session_state.eval_dataset["question"].str.strip() != "") &
-        (st.session_state.eval_dataset["answer"].str.strip() != "")
+        (st.session_state.eval_dataset["question"].astype(str).str.strip() != "") &
+        (st.session_state.eval_dataset["question"].astype(str).str.strip() != "nan") &
+        (st.session_state.eval_dataset["answer"].astype(str).str.strip() != "") &
+        (st.session_state.eval_dataset["answer"].astype(str).str.strip() != "nan")
     ]
 
     if len(ready_rows) == 0:
@@ -424,11 +463,20 @@ with tab3:
                     st.success("🎉 Evaluation hoàn tất!")
                     st.markdown("### 📈 Kết quả tổng hợp")
 
+                    # Convert to pandas first — works với mọi version RAGAS (0.1.x và 0.2.x)
+                    detail_df = result.to_pandas()
+
+                    def safe_mean(col):
+                        """Lấy mean score từ DataFrame, trả về 0 nếu cột không tồn tại"""
+                        if col in detail_df.columns:
+                            return float(detail_df[col].dropna().mean())
+                        return 0.0
+
                     scores = {
-                        "Faithfulness":       result.get("faithfulness",       0),
-                        "Answer Relevancy":   result.get("answer_relevancy",   0),
-                        "Context Recall":     result.get("context_recall",     0),
-                        "Context Precision":  result.get("context_precision",  0),
+                        "Faithfulness":      safe_mean("faithfulness"),
+                        "Answer Relevancy":  safe_mean("answer_relevancy"),
+                        "Context Recall":    safe_mean("context_recall"),
+                        "Context Precision": safe_mean("context_precision"),
                     }
 
                     def score_color(s):
@@ -469,15 +517,27 @@ with tab3:
                         st.progress(min(score, 1.0))
 
                     # Per-question table
+                    # RAGAS v0.2+ không bao gồm cột 'question' trong result df → ghép thủ công
                     st.markdown("### 🔬 Kết quả từng câu hỏi")
-                    detail_df = result.to_pandas()
-                    st.dataframe(
-                        detail_df[["question", "faithfulness", "answer_relevancy", "context_recall", "context_precision"]],
-                        use_container_width=True,
+
+                    # Lấy các cột metric có sẵn trong detail_df
+                    metric_cols = [c for c in ["faithfulness", "answer_relevancy", "context_recall", "context_precision"] if c in detail_df.columns]
+
+                    # Ghép question, answer, ground_truth từ ragas_data gốc
+                    questions_df = pd.DataFrame([{
+                        "question":     r["question"],
+                        "ground_truth": r["ground_truth"],
+                    } for r in ragas_data]).reset_index(drop=True)
+
+                    display_df = pd.concat(
+                        [questions_df, detail_df[metric_cols].reset_index(drop=True)],
+                        axis=1
                     )
 
-                    # Download results
-                    result_csv = detail_df.to_csv(index=False).encode("utf-8-sig")
+                    st.dataframe(display_df, use_container_width=True)
+
+                    # Download results (dùng display_df có đủ question + metrics)
+                    result_csv = display_df.to_csv(index=False).encode("utf-8-sig")
                     st.download_button(
                         "💾 Download kết quả CSV",
                         data=result_csv,
@@ -485,13 +545,14 @@ with tab3:
                         mime="text/csv",
                     )
 
-                    # Top worst questions
-                    st.markdown("### ⚠️ Câu hỏi có Faithfulness thấp nhất (cần cải thiện)")
-                    worst = detail_df.sort_values("faithfulness").head(5)
-                    for _, row in worst.iterrows():
-                        with st.expander(f'❓ {str(row["question"])[:80]}... — Faithfulness: {row["faithfulness"]:.3f}'):
-                            st.write("**Answer:**", row.get("answer", ""))
-                            st.write("**Ground Truth:**", row.get("ground_truth", ""))
+                    # Top worst questions (dùng display_df đã ghép question)
+                    if "faithfulness" in display_df.columns:
+                        st.markdown("### ⚠️ Câu hỏi có Faithfulness thấp nhất (cần cải thiện)")
+                        worst = display_df.sort_values("faithfulness").head(5)
+                        for _, row in worst.iterrows():
+                            faith_val = row.get("faithfulness", 0) or 0
+                            with st.expander(f'❓ {str(row["question"])[:80]}... — Faithfulness: {faith_val:.3f}'):
+                                st.write("**Ground Truth:**", row.get("ground_truth", ""))
 
                 except ImportError as e:
                     st.error(f"❌ Thiếu thư viện RAGAS: {e}. Hãy cài: `pip install ragas langchain-openai datasets`")
