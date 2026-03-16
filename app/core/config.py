@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "gpt-4o-mini"
 
+
+
     # ============================================================
     # Cohere Reranker Configuration
     # Đặt RERANK_ENABLE=true trong .env để bật re-ranking
@@ -31,6 +33,8 @@ class Settings(BaseSettings):
     # Security
     ALLOWED_EXTENSIONS: set = {".pdf", ".txt", ".docx", ".png", ".jpg", ".jpeg", ".md"}
     MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
+
+
 
     class Config:
         env_file = ".env"

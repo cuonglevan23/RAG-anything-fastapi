@@ -102,8 +102,8 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
                 # text_chunks / entities_vdb / chunks_vdb / pipeline_status namespace,
                 # causing cross-project query results even with different working_dirs.
                 "workspace": project_id,
-                "chunk_token_size": 600,          # Giảm từ 1200 → 600: mỗi Điều luật có chunk riêng
-                "chunk_overlap_token_size": 80,   # Overlap nhỏ để giữ ngữ cảnh liên Điều
+                "chunk_token_size": 512,          # Giảm từ 1200 → 600: mỗi Điều luật có chunk riêng
+                "chunk_overlap_token_size": 128,   # Overlap nhỏ để giữ ngữ cảnh liên Điều
                 "addon_params": {
                     "insert_batch_size": 5,
                     "language": "Vietnamese",
