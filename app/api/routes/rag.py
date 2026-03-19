@@ -72,9 +72,11 @@ async def query_rag(request: QueryRequest):
     """Query the RAG system within a specific workspace"""
     try:
         response = await rag_service.query(
-            project_id=request.project_id, 
-            query=request.query, 
-            mode=request.mode
+            project_id=request.project_id,
+            query=request.query,
+            mode=request.mode,
+            top_k=request.top_k,
+            response_type=request.response_type,
         )
         return QueryResponse(
             query=request.query,
@@ -104,6 +106,8 @@ async def query_eval(request: EvalQueryRequest):
             project_id=request.project_id,
             query=request.query,
             mode=request.mode,
+            top_k=request.top_k,
+            response_type=request.response_type,
         )
         return EvalQueryResponse(
             query=result["query"],

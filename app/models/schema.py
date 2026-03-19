@@ -6,6 +6,8 @@ class QueryRequest(BaseModel):
     query: str
     project_id: str
     mode: str = "hybrid"  # local, global, hybrid, naive, mix
+    top_k: int = 100
+    response_type: str = "Structured List"  # e.g. "Structured List", "Single Paragraph", "Multiple Paragraphs"
     context_id: Optional[str] = None
 
 class EvalQueryRequest(BaseModel):
@@ -13,6 +15,8 @@ class EvalQueryRequest(BaseModel):
     query: str
     project_id: str
     mode: str = "hybrid"
+    top_k: int = 100
+    response_type: str = "Structured List"
 
 class EvalQueryResponse(BaseModel):
     """Response for evaluation - includes both answer and raw retrieved contexts"""

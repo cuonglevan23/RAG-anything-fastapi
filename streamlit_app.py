@@ -181,6 +181,35 @@ with tab2:
         key="query_mode_selector",
     )
     st.session_state.query_mode = selected_mode
+
+    # ── Query Settings (top_k + response_type) ──────────────────────────────
+    with st.expander("⚙️ Query Settings", expanded=False):
+        col_topk, col_rtype = st.columns(2)
+        with col_topk:
+            top_k = st.slider(
+                "🔢 Top-K (số entity/chunk tìm kiếm)",
+                min_value=10, max_value=500, value=100, step=10,
+                help="Số lượng entity/relation/chunk LightRAG lấy ra trước khi lọc. "
+                     "Cao hơn → recall tốt hơn nhưng chậm hơn.",
+                key="chat_top_k",
+            )
+        with col_rtype:
+            response_type = st.selectbox(
+                "📝 Response Type",
+                options=[
+                    "Structured List",
+                    "Single Paragraph",
+                    "Multiple Paragraphs",
+                    "Bullet Points",
+                    "Plain Text",
+                ],
+                index=0,
+                help="Định dạng câu trả lời LLM sẽ trả về.\n"
+                     "• Structured List: danh sách có cấu trúc\n"
+                     "• Single/Multiple Paragraphs: đoạn văn liên tục\n"
+                     "• Bullet Points: dạng gạch đầu dòng",
+                key="chat_response_type",
+            )
     st.markdown("---")
 
     if "messages" not in st.session_state:
@@ -195,9 +224,15 @@ with tab2:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            with st.spinner(f"Thinking... (mode: {st.session_state.query_mode})"):
+            with st.spinner(f"Thinking... (mode: {st.session_state.query_mode}, top_k: {top_k})"):
                 try:
-                    payload  = {"query": prompt, "mode": st.session_state.query_mode, "project_id": st.session_state.project_id}
+                    payload = {
+                        "query":         prompt,
+                        "mode":          st.session_state.query_mode,
+                        "project_id":    st.session_state.project_id,
+                        "top_k":         top_k,
+                        "response_type": response_type,
+                    }
                     response = requests.post(f"{api_url}/query", json=payload)
                     if response.status_code == 200:
                         full_response = response.json().get("response", "No response received.")
@@ -207,6 +242,7 @@ with tab2:
                         st.error(f"API Error: {response.status_code}")
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+
 
 # ============================================================================
 # TAB 3 — Evaluate (RAGAS)

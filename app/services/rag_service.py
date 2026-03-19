@@ -102,8 +102,8 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
                 # text_chunks / entities_vdb / chunks_vdb / pipeline_status namespace,
                 # causing cross-project query results even with different working_dirs.
                 "workspace": project_id,
-                "chunk_token_size": 512,          # Giảm từ 1200 → 600: mỗi Điều luật có chunk riêng
-                "chunk_overlap_token_size": 128,   # Overlap nhỏ để giữ ngữ cảnh liên Điều
+                "chunk_token_size": 400,          # Chunk nhỏ → mỗi "Điều" fit trong 1 chunk
+                "chunk_overlap_token_size": 200,  # 50% overlap → nội dung ranh giới xuất hiện đủ ở cả 2 chunk
                 "addon_params": {
                     "insert_batch_size": 5,
                     "language": "Vietnamese",
@@ -235,29 +235,26 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
         """Get status of a specific task"""
         return self.tasks.get(task_id)
 
-    async def query(self, project_id: str, query: str, mode: str = "hybrid") -> str:
+    async def query(self, project_id: str, query: str, mode: str = "hybrid",
+                    top_k: int = 100, response_type: str = "Structured List") -> str:
         """Execute RAG query within a specific project"""
-        # Switch default workspace TRƯỚC khi query để tránh đọc nhầm project khác
         set_default_workspace(project_id)
         rag = await self.get_instance(project_id)
         
-        # Khi reranker được bật, LightRAG khuyến nghị dùng mode='mix' để tối ưu hiệu suất
-        # Người dùng có thể ghi đè bằng cách chọn mode khác trên Streamlit
         effective_mode = mode
         if settings.RERANK_ENABLE and mode == "hybrid":
-            effective_mode = "mix"  # mix = hybrid + naive, tốt nhất khi có reranker
+            effective_mode = "mix"
             logger.info(f"Reranker active: auto-upgrade mode hybrid → mix")
 
-        # Mode 'local' và 'naive' phù hợp truy vấn nguyên văn (chunk-based)
-        # Mode 'hybrid'/'mix' phù hợp câu hỏi tổng hợp (graph-based)
         return await rag.aquery(
-            query=query, 
-            mode=effective_mode, 
-            top_k=100, 
-            response_type="Structured List"
+            query=query,
+            mode=effective_mode,
+            top_k=top_k,
+            response_type=response_type,
         )
 
-    async def query_with_context(self, project_id: str, query: str, mode: str = "hybrid") -> dict:
+    async def query_with_context(self, project_id: str, query: str, mode: str = "hybrid",
+                                  top_k: int = 100, response_type: str = "Structured List") -> dict:
         """
         Execute RAG query and return BOTH the final answer and the retrieved raw contexts.
         Used by the RAGAS evaluation tab.
@@ -274,8 +271,8 @@ Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
         answer = await rag.aquery(
             query=query,
             mode=effective_mode,
-            top_k=100,
-            response_type="Structured List"
+            top_k=top_k,
+            response_type=response_type,
         )
 
         # Run naive query to get raw retrieved passages (contexts for RAGAS)
