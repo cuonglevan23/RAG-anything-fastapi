@@ -10,7 +10,8 @@ from app.services.vlm_parser import CustomOpenAIPipeline
 from raganything import RAGAnything, RAGAnythingConfig
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
-from lightrag.rerank import cohere_rerank
+from lightrag.rerank import cohere_rerank  # kept for optional fallback
+from app.services.local_reranker import local_bge_rerank
 # set_default_workspace: đảm bảo LightRAG dùng đúng namespace cho từng project
 from lightrag.kg.shared_storage import set_default_workspace
 from app.core.config import settings
@@ -118,21 +119,21 @@ Quy tắc bắt buộc:
             # ============================================================
             # Cohere Rerank 3.5 Configuration
             # Để bật: set RERANK_ENABLE=true và COHERE_API_KEY trong .env
-            # LightRAG khuyến nghị dùng mode="mix" khi bật reranker.
+            # ============================================================
+            # Local BGE Reranker (free, ~560MB VRAM, multilingual)
+            # Bật bằng: RERANK_ENABLE=true trong .env
+            # Model mặc định: BAAI/bge-reranker-v2-m3
+            # Cài đặt:  pip install FlagEmbedding
             # ============================================================
             rerank_func = None
-            if settings.RERANK_ENABLE and settings.COHERE_API_KEY:
+            if settings.RERANK_ENABLE:
                 rerank_func = partial(
-                    cohere_rerank,
-                    model=settings.RERANK_MODEL,              # rerank-v3.5 | rerank-multilingual-v3.0
-                    api_key=settings.COHERE_API_KEY,          # Cohere API Key từ .env
-                    base_url=settings.RERANK_BASE_URL,        # https://api.cohere.com/v2/rerank (mặc định)
-                    enable_chunking=settings.RERANK_ENABLE_CHUNKING,      # True nếu tài liệu dài > 4096 token
-                    max_tokens_per_doc=settings.RERANK_MAX_TOKENS_PER_DOC # Token limit mỗi chunk (mặc định 4096)
+                    local_bge_rerank,
+                    model_name=settings.RERANK_MODEL,  # BAAI/bge-reranker-v2-m3
                 )
-                logger.info(f"✅ Cohere Reranker enabled: model={settings.RERANK_MODEL}")
+                logger.info(f"✅ Local BGE Reranker enabled: {settings.RERANK_MODEL}")
             else:
-                logger.info("⚠️  Reranker disabled. Set RERANK_ENABLE=true + COHERE_API_KEY in .env to enable.")
+                logger.info("⚠️  Reranker disabled. Set RERANK_ENABLE=true in .env to enable.")
             # ============================================================
 
             # ================================================================

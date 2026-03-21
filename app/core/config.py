@@ -19,15 +19,13 @@ class Settings(BaseSettings):
 
 
     # ============================================================
-    # Cohere Reranker Configuration
+    # Local Reranker Configuration (BGE — free, runs on GPU)
     # Đặt RERANK_ENABLE=true trong .env để bật re-ranking
+    # Model mặc định: BAAI/bge-reranker-v2-m3 (~560MB VRAM, đa ngôn ngữ)
+    # Lựa chọn nhẹ hơn: BAAI/bge-reranker-base (~278MB VRAM)
     # ============================================================
     RERANK_ENABLE: bool = os.getenv("RERANK_ENABLE", "false").lower() == "true"
-    COHERE_API_KEY: str = os.getenv("COHERE_API_KEY", "")
-    RERANK_MODEL: str = os.getenv("RERANK_MODEL", "rerank-v3.5")          # rerank-v3.5 | rerank-multilingual-v3.0
-    RERANK_BASE_URL: str = os.getenv("RERANK_BASE_URL", "https://api.cohere.com/v2/rerank")
-    RERANK_ENABLE_CHUNKING: bool = os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"  # True nếu doc dài (>4096 token)
-    RERANK_MAX_TOKENS_PER_DOC: int = int(os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096"))  # Token limit per doc
+    RERANK_MODEL: str = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
     # ============================================================
 
     # Security
