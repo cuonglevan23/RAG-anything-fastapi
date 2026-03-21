@@ -44,7 +44,22 @@ class RAGService:
             config = RAGAnythingConfig(
                 working_dir=project_dir,
             )
+            LEGAL_ENTITY_EXTRACTION_PROMPT = """-Goal-
+            Given a text document that may contain Vietnamese legal content (laws, decrees, regulations),
+            identify all the entities and relationships needed to understand the document structure.
 
+            -Instructions-
+            1. ALWAYS treat each "Điều X" (Article/Clause number) as a PRIMARY ENTITY of type "legal_article".
+            2. Extract the COMPLETE, VERBATIM content of each Điều as its description—DO NOT summarize or truncate.
+            3. Identify relationships between Điều (e.g., "Điều 5 references Điều 12").
+            4. For other entities (organizations, concepts, terms), extract normally.
+            5. Use Vietnamese names exactly as they appear in the source text.
+
+            -Example-
+            Entity: Điều 12 | Type: legal_article | Description: <full verbatim text of Điều 12>
+            Entity: Thư viện chuyên ngành | Type: concept | Description: ...
+            Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
+            """
             def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
                 return openai_complete_if_cache(
                     settings.LLM_MODEL, prompt, system_prompt=system_prompt,
@@ -58,22 +73,7 @@ class RAGService:
 
             # Custom extraction prompt: dạy LightRAG nhận diện "Điều X" là entity quan trọng
             # và giữ lại nội dung nguyên văn thay vì tóm tắt.
-            LEGAL_ENTITY_EXTRACTION_PROMPT = """-Goal-
-Given a text document that may contain Vietnamese legal content (laws, decrees, regulations),
-identify all the entities and relationships needed to understand the document structure.
 
--Instructions-
-1. ALWAYS treat each "Điều X" (Article/Clause number) as a PRIMARY ENTITY of type "legal_article".
-2. Extract the COMPLETE, VERBATIM content of each Điều as its description—DO NOT summarize or truncate.
-3. Identify relationships between Điều (e.g., "Điều 5 references Điều 12").
-4. For other entities (organizations, concepts, terms), extract normally.
-5. Use Vietnamese names exactly as they appear in the source text.
-
--Example-
-Entity: Điều 12 | Type: legal_article | Description: <full verbatim text of Điều 12>
-Entity: Thư viện chuyên ngành | Type: concept | Description: ...
-Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
-"""
 
             # ============================================================
             # Cohere Rerank 3.5 Configuration

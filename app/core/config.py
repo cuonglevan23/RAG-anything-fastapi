@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     EMBEDDING_MODEL: str = "text-embedding-3-small"
-    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_MODEL: str = "gpt-4o"
 
 
 
