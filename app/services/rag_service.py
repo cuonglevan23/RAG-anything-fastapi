@@ -44,25 +44,28 @@ class RAGService:
             config = RAGAnythingConfig(
                 working_dir=project_dir,
             )
-            LEGAL_ENTITY_EXTRACTION_PROMPT = """-Goal-
-            Given a text document that may contain Vietnamese legal content (laws, decrees, regulations),
-            identify all the entities and relationships needed to understand the document structure.
+            # ================================================================
+            # FIX 1: Legal-domain system_prompt
+            # Inject vào MỌI lần LLM được gọi (entity extraction, summarization,
+            # query generation). Không set → LLM không biết ngữ cảnh pháp lý
+            # → extract entity generic, thiếu nhận diện Chương/Mục/Điều.
+            # ================================================================
+            LEGAL_SYSTEM_PROMPT = """Bạn là chuyên gia phân tích văn bản pháp luật Việt Nam.
+Nhiệm vụ: xử lý luật, nghị định, thông tư, quyết định của Nhà nước Việt Nam.
 
-            -Instructions-
-            1. ALWAYS treat each "Điều X" (Article/Clause number) as a PRIMARY ENTITY of type "legal_article".
-            2. Extract the COMPLETE, VERBATIM content of each Điều as its description—DO NOT summarize or truncate.
-            3. Identify relationships between Điều (e.g., "Điều 5 references Điều 12").
-            4. For other entities (organizations, concepts, terms), extract normally.
-            5. Use Vietnamese names exactly as they appear in the source text.
+Quy tắc bắt buộc:
+1. Nhận diện cấu trúc phân cấp: PHẦN > CHƯƠNG > MỤC > ĐIỀU > KHOẢN > ĐIỂM
+2. Mỗi "Điều X" là đơn vị pháp lý độc lập — TRÍCH DẪN NGUYÊN VĂN, không tóm tắt
+3. Quan hệ tham chiếu giữa các điều luật rất quan trọng (Điều A dẫn chiếu Điều B)
+4. Giữ nguyên số điều, khoản, điểm chính xác (Điều 12 khoản 2 điểm a)
+5. Trả lời bằng tiếng Việt, dùng thuật ngữ pháp lý chính xác"""
 
-            -Example-
-            Entity: Điều 12 | Type: legal_article | Description: <full verbatim text of Điều 12>
-            Entity: Thư viện chuyên ngành | Type: concept | Description: ...
-            Relationship: Điều 12 -> defines -> Thư viện chuyên ngành
-            """
             def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+                # Nếu caller không truyền system_prompt, inject LEGAL_SYSTEM_PROMPT
+                # → mọi LLM call đều có context pháp lý (entity extraction, summary, query)
+                effective_system = system_prompt if system_prompt is not None else LEGAL_SYSTEM_PROMPT
                 return openai_complete_if_cache(
-                    settings.LLM_MODEL, prompt, system_prompt=system_prompt,
+                    settings.LLM_MODEL, prompt, system_prompt=effective_system,
                     history_messages=history_messages, api_key=settings.OPENAI_API_KEY, **kwargs,
                 )
 
@@ -71,9 +74,46 @@ class RAGService:
                 func=lambda texts: openai_embed(texts, model=settings.EMBEDDING_MODEL, api_key=settings.OPENAI_API_KEY),
             )
 
-            # Custom extraction prompt: dạy LightRAG nhận diện "Điều X" là entity quan trọng
-            # và giữ lại nội dung nguyên văn thay vì tóm tắt.
+            # ================================================================
+            # FIX 2: Vietnamese Legal Chunker
+            # Ưu tiên split tại ranh giới Chương/Mục/Điều TRƯỚC khi split token.
+            # → Mỗi "Điều X" luôn nằm hoàn chỉnh trong ≥1 chunk.
+            # → Giải quyết vấn đề điều luật cuối tài liệu bị mất nội dung.
+            # ================================================================
+            import re as _re
 
+            def vietnamese_legal_chunker(
+                tokenizer, content: str,
+                split_by_character=None, split_by_character_only: bool = False,
+                chunk_overlap_token_size: int = 200, chunk_token_size: int = 400,
+            ):
+                LEGAL_BOUNDARY = _re.compile(
+                    r'(?=\n(?:PHẦN|CHƯƠNG|MỤC|ĐIỀU|Phần|Chương|Mục|Điều)\s+[\dIVXivx]+[\.:]?\s)',
+                    _re.UNICODE,
+                )
+                parts = LEGAL_BOUNDARY.split(content)
+                results = []
+                chunk_idx = 0
+                for part in parts:
+                    if not part.strip():
+                        continue
+                    tokens = tokenizer.encode(part)
+                    if len(tokens) <= chunk_token_size:
+                        results.append({"tokens": len(tokens), "content": part.strip(), "chunk_order_index": chunk_idx})
+                        chunk_idx += 1
+                    else:
+                        for start in range(0, len(tokens), chunk_token_size - chunk_overlap_token_size):
+                            sub = tokens[start: start + chunk_token_size]
+                            results.append({"tokens": len(sub), "content": tokenizer.decode(sub).strip(), "chunk_order_index": chunk_idx})
+                            chunk_idx += 1
+                            if start + chunk_token_size >= len(tokens):
+                                break
+                if not results:  # Fallback: không tìm thấy boundary pháp lý
+                    tokens = tokenizer.encode(content)
+                    for i, start in enumerate(range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)):
+                        sub = tokens[start: start + chunk_token_size]
+                        results.append({"tokens": len(sub), "content": tokenizer.decode(sub).strip(), "chunk_order_index": i})
+                return results
 
             # ============================================================
             # Cohere Rerank 3.5 Configuration
@@ -95,20 +135,33 @@ class RAGService:
                 logger.info("⚠️  Reranker disabled. Set RERANK_ENABLE=true + COHERE_API_KEY in .env to enable.")
             # ============================================================
 
-            # Xây dựng lightrag_kwargs động để thêm rerank_model_func có điều kiện
+            # ================================================================
+            # FIX 3: Legal entity_types — thay thế DEFAULT generic types
+            # DEFAULT = ["organization","person","geo","event"] hoàn toàn
+            # không phù hợp với văn bản luật Việt Nam.
+            # ================================================================
             lightrag_kwargs = {
-                # ✅ KEY FIX: workspace isolates ALL LightRAG in-memory namespaces per project.
-                # Without this, all projects default to workspace="" and share the same
-                # text_chunks / entities_vdb / chunks_vdb / pipeline_status namespace,
-                # causing cross-project query results even with different working_dirs.
                 "workspace": project_id,
-                "chunk_token_size": 400,          # Chunk nhỏ → mỗi "Điều" fit trong 1 chunk
-                "chunk_overlap_token_size": 200,  # 50% overlap → nội dung ranh giới xuất hiện đủ ở cả 2 chunk
+                "chunk_token_size": 400,
+                "chunk_overlap_token_size": 200,
+                "chunking_func": vietnamese_legal_chunker,  # FIX 2
                 "addon_params": {
-                    "insert_batch_size": 5,
                     "language": "Vietnamese",
                     "entity_extract_max_gleaning": 2,
-                }
+                    "insert_batch_size": 5,
+                    "entity_types": [       # FIX 3
+                        "dieu",             # Điều X — đơn vị pháp lý cơ bản
+                        "khoan",            # Khoản trong Điều
+                        "muc",              # Mục trong Chương
+                        "chuong",           # Chương trong Luật
+                        "phan",             # Phần (cấp cao nhất)
+                        "to_chuc",          # Tổ chức, cơ quan nhà nước
+                        "khai_niem",        # Định nghĩa, khái niệm pháp lý
+                        "hanh_vi",          # Hành vi, hoạt động được quy định
+                        "doi_tuong",        # Đối tượng áp dụng
+                        "chinh_sach",       # Chính sách, quy định chung
+                    ],
+                },
             }
             if rerank_func:
                 lightrag_kwargs["rerank_model_func"] = rerank_func  # Bật Cohere Reranker
