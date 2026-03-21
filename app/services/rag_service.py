@@ -61,9 +61,17 @@ Quy tắc bắt buộc:
 4. Giữ nguyên số điều, khoản, điểm chính xác (Điều 12 khoản 2 điểm a)
 5. Trả lời bằng tiếng Việt, dùng thuật ngữ pháp lý chính xác"""
 
+            def _sanitize(text: str) -> str:
+                """Loại bỏ null bytes và ký tự UTF-8 không hợp lệ gây ra lỗi 400 khi gửi OpenAI."""
+                # 1. Re-encode để loại bỏ byte không hợp lệ
+                text = text.encode("utf-8", errors="ignore").decode("utf-8")
+                # 2. Xóa null bytes và control chars (trừ \n, \t)
+                text = "".join(ch for ch in text if ch == "\n" or ch == "\t" or (ord(ch) >= 32 and ch != "\x7f"))
+                return text
+
             def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-                # Nếu caller không truyền system_prompt, inject LEGAL_SYSTEM_PROMPT
-                # → mọi LLM call đều có context pháp lý (entity extraction, summary, query)
+                # Sanitize prompt trước khi gửi → tránh 400 'invalid JSON body'
+                prompt = _sanitize(prompt) if isinstance(prompt, str) else prompt
                 effective_system = system_prompt if system_prompt is not None else LEGAL_SYSTEM_PROMPT
                 return openai_complete_if_cache(
                     settings.LLM_MODEL, prompt, system_prompt=effective_system,
@@ -98,6 +106,7 @@ Quy tắc bắt buộc:
                 for part in parts:
                     if not part.strip():
                         continue
+                    part = _sanitize(part)  # ← strip null bytes trước khi encode
                     tokens = tokenizer.encode(part)
                     if len(tokens) <= chunk_token_size:
                         results.append({"tokens": len(tokens), "content": part.strip(), "chunk_order_index": chunk_idx})
