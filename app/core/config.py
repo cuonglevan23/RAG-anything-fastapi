@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Model mặc định: BAAI/bge-reranker-v2-m3 (~560MB VRAM, đa ngôn ngữ)
     # Lựa chọn nhẹ hơn: BAAI/bge-reranker-base (~278MB VRAM)
     # ============================================================
-    RERANK_ENABLE: bool = os.getenv("RERANK_ENABLE", "false").lower() == "true"
+    RERANK_ENABLE: bool = os.getenv("RERANK_ENABLE", "true").lower() == "true"
     RERANK_MODEL: str = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
     # ============================================================
 
