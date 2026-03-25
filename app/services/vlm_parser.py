@@ -216,18 +216,23 @@ class CustomOpenAIPipeline:
 
 
 # ── Singleton: load MinerU2.5 MỘT LẦN DUY NHẤT khi server khởi động ──────────
-# Mọi lần gọi get_vlm_pipeline() đều trả về CÙNG instance đã load.
+import threading
 _vlm_pipeline_instance: "CustomOpenAIPipeline | None" = None
+_vlm_pipeline_lock = threading.Lock()
 
 def get_vlm_pipeline() -> "CustomOpenAIPipeline":
     """
     Trả về singleton instance của CustomOpenAIPipeline.
-    Lần đầu gọi: load MinerU2.5 Qwen2VL vào GPU (~4-5s).
+    Thread-safe: dùng threading.Lock để tránh double-init race condition.
+    Lần đầu gọi: load MinerU2.5 Qwen2VL vào GPU (~30s đầu tiên).
     Các lần sau: trả về ngay lập tức, không reload.
     """
     global _vlm_pipeline_instance
-    if _vlm_pipeline_instance is None:
-        logger.info("Initializing VLM Pipeline singleton (first call)...")
-        _vlm_pipeline_instance = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
-        logger.info("VLM Pipeline singleton ready — will be reused for all files.")
+    if _vlm_pipeline_instance is not None:
+        return _vlm_pipeline_instance          # fast path — không cần lock
+    with _vlm_pipeline_lock:                   # chỉ 1 thread vào đây cùng lúc
+        if _vlm_pipeline_instance is None:     # double-checked locking
+            logger.info("Initializing VLM Pipeline singleton (first call)...")
+            _vlm_pipeline_instance = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
+            logger.info("VLM Pipeline singleton ready — will be reused for all files.")
     return _vlm_pipeline_instance
