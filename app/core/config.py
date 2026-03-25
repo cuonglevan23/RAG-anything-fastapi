@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Security
     ALLOWED_EXTENSIONS: set = {".pdf", ".txt", ".docx", ".png", ".jpg", ".jpeg", ".md"}
-    MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
+    MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100MB
 
 
 
