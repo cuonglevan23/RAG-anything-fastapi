@@ -6,7 +6,7 @@ from typing import Dict, Optional, Any
 from pathlib import Path
 from loguru import logger
 
-from app.services.vlm_parser import CustomOpenAIPipeline
+from app.services.vlm_parser import CustomOpenAIPipeline, get_vlm_pipeline
 from raganything import RAGAnything, RAGAnythingConfig
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
@@ -306,8 +306,8 @@ Quy tắc bắt buộc:
             # Step 1.1: Parse document using VLM (GPT-4o)
             task.logs.append(f"Starting engine: OpenAIPipeline (VLM) for project {project_id}...")
             
-            # Khởi tạo pipeline và process
-            vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
+            # VLM pipeline: singleton — load Qwen2VL chỉ 1 lần, reuse cho mọi file
+            vlm_pipeline = get_vlm_pipeline()
 
             file_basename = os.path.splitext(os.path.basename(file_path))[0]
             project_dir   = os.path.abspath(settings.BASE_RAG_DIR / project_id)
@@ -371,7 +371,7 @@ Quy tắc bắt buộc:
             elif file_ext in (".png", ".jpg", ".jpeg", ".webp"):
                 # ── Image: dùng VLM để mô tả ──
                 task.logs.append(f"Image detected — waiting for GPU slot...")
-                vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
+                vlm_pipeline = get_vlm_pipeline()
                 import asyncio
                 async with VLM_SEMAPHORE:   # ← chỉ 1 GPU task cùng lúc
                     task.logs.append(f"Image GPU slot acquired — processing via VLM...")

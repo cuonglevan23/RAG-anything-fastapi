@@ -214,5 +214,20 @@ class CustomOpenAIPipeline:
         self.usage_tracker.log_summary()
         return md_file_path
 
-# Global instance for app reuse if convenient, but typical instantiation inside service task is fine to not block import
-# vlm_pipeline = CustomOpenAIPipeline() 
+
+# ── Singleton: load MinerU2.5 MỘT LẦN DUY NHẤT khi server khởi động ──────────
+# Mọi lần gọi get_vlm_pipeline() đều trả về CÙNG instance đã load.
+_vlm_pipeline_instance: "CustomOpenAIPipeline | None" = None
+
+def get_vlm_pipeline() -> "CustomOpenAIPipeline":
+    """
+    Trả về singleton instance của CustomOpenAIPipeline.
+    Lần đầu gọi: load MinerU2.5 Qwen2VL vào GPU (~4-5s).
+    Các lần sau: trả về ngay lập tức, không reload.
+    """
+    global _vlm_pipeline_instance
+    if _vlm_pipeline_instance is None:
+        logger.info("Initializing VLM Pipeline singleton (first call)...")
+        _vlm_pipeline_instance = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
+        logger.info("VLM Pipeline singleton ready — will be reused for all files.")
+    return _vlm_pipeline_instance
