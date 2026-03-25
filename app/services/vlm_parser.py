@@ -130,10 +130,30 @@ class CustomOpenAIPipeline:
     def _map_type_to_prompt(self, block_type: str) -> str:
         block_type = block_type.lower()
         if block_type == "table":
-            return "Recognize the table in this image and output it in HTML format. Ensure the structure is correct."
+            return (
+                "You are an expert OCR model specializing in Vietnamese administrative and medical documents.\n"
+                "Carefully read the table in this image and output it in HTML <table> format.\n\n"
+                "CRITICAL RULES — follow exactly:\n"
+                "1. Read each cell INDEPENDENTLY. Do NOT infer a cell's value from neighboring cells.\n"
+                "2. Checkbox columns ('Có'/'Không', 'Có'/'Không', 'Yes'/'No'):\n"
+                "   - A ✓, ✗, X, or filled mark means that specific column is selected.\n"
+                "   - An EMPTY cell means NOT selected — output empty <td></td>.\n"
+                "   - NEVER move a checkmark from one column to its neighbor.\n"
+                "3. Preserve the exact column count and alignment from the image.\n"
+                "4. For merged cells, use colspan/rowspan in HTML.\n"
+                "5. Output ONLY the HTML table. No explanation, no markdown fences.\n\n"
+                "Example of correct checkbox output:\n"
+                "<tr><td>Tăng huyết áp</td><td>✓</td><td></td></tr>  <!-- Có=✓, Không=empty -->\n"
+                "<tr><td>Bệnh tim mạch</td><td></td><td>✓</td></tr>  <!-- Có=empty, Không=✓ -->"
+            )
         elif block_type == "equation":
             return r"Recognize the formula in this image and output it in LaTeX format. Wrap the formula in \[ and \]."
-        return "Recognize the text in this image. Output the raw OCR results."
+        return (
+            "You are an expert OCR model for Vietnamese documents.\n"
+            "Transcribe ALL text exactly as it appears. Preserve line breaks.\n"
+            "Do not translate, interpret, or summarize. Output raw OCR text only."
+        )
+
 
     def _process_block(self, image: Image.Image, block_info: dict) -> dict:
         img_w, img_h = image.size
