@@ -354,8 +354,8 @@ Quy tắc bắt buộc:
                 # Feed PDF vào VLM pipeline y hệt file PDF thường
                 async with VLM_SEMAPHORE:
                     task.logs.append("PDF GPU slot acquired — parsing converted DOCX...")
-                    parsed_md_path = await asyncio.to_thread(
-                        vlm_pipeline.process_pdf, converted_pdf, output_dir, file_basename
+                    parsed_md_path = await vlm_pipeline.process_pdf(
+                        converted_pdf, output_dir, file_basename
                     )
                 task.logs.append(f"DOCX→PDF→VLM done: {parsed_md_path}")
 
@@ -375,21 +375,19 @@ Quy tắc bắt buộc:
                 import asyncio
                 async with VLM_SEMAPHORE:   # ← chỉ 1 GPU task cùng lúc
                     task.logs.append(f"Image GPU slot acquired — processing via VLM...")
-                    parsed_md_path = await asyncio.to_thread(
-                        vlm_pipeline.process_pdf, file_path, output_dir, file_basename
+                    parsed_md_path = await vlm_pipeline.process_pdf(
+                        file_path, output_dir, file_basename
                     )
                 task.logs.append(f"VLM Parsing finished: {parsed_md_path}")
 
             else:
-                # ── PDF và các định dạng khác: dùng VLM pipeline ──
-                task.logs.append(f"PDF detected — waiting for GPU slot...")
-                vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
+                vlm_pipeline = get_vlm_pipeline()
                 import asyncio
                 try:
                     async with VLM_SEMAPHORE:   # ← chỉ 1 GPU task cùng lúc
                         task.logs.append(f"PDF GPU slot acquired — parsing...")
-                        parsed_md_path = await asyncio.to_thread(
-                            vlm_pipeline.process_pdf, file_path, output_dir, file_basename
+                        parsed_md_path = await vlm_pipeline.process_pdf(
+                            file_path, output_dir, file_basename
                         )
                     task.logs.append(f"VLM Parsing finished. Markdown created at: {parsed_md_path}")
                 except Exception as pdf_err:
