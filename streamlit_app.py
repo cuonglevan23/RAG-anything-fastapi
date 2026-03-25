@@ -180,108 +180,115 @@ with tab1:
                     st.error(f"Connection error: {e}")
                     status.update(label="Connection Error", state="error")
 
-        # ── BATCH FILES: upload từng file qua /upload, collect task_ids ──
+        # ── BATCH FILES: xử lý tuần tự — upload xong 1 file, đợi hoàn thành rồi mới tiếp ──
         else:
-            st.markdown(f"### 📤 Uploading {len(uploaded_files)} files to `{st.session_state.project_id}`")
-            upload_bar   = st.progress(0, text="Preparing...")
-            upload_status = st.empty()
-            results      = []
+            total   = len(uploaded_files)
+            results = []  # bảng tổng kết cuối
+
+            st.markdown(f"### 📂 Processing {total} files — Sequential Mode")
+            overall_bar   = st.progress(0, text="Starting...")
+            file_label    = st.empty()
+            file_progress = st.empty()
+            log_box       = st.empty()
+            summary_table = st.empty()
 
             for i, f in enumerate(uploaded_files, 1):
-                upload_bar.progress(i / len(uploaded_files),
-                                    text=f"Uploading {i}/{len(uploaded_files)}: {f.name}")
-                upload_status.info(f"📤 `{f.name}` ({f.size / 1024:.0f} KB)")
+                overall_bar.progress(i / total,
+                                     text=f"File {i}/{total}: {f.name}")
 
+                # ── Validate extension ──────────────────────────────────────
                 ext = f.name.rsplit(".", 1)[-1].lower() if "." in f.name else ""
                 if ext not in ["pdf", "txt", "docx", "doc", "md", "png", "jpg", "jpeg"]:
-                    results.append({"filename": f.name, "task_id": None,
-                                    "status": "skipped", "message": f"Unsupported: .{ext}"})
+                    file_label.warning(f"⏭️ Skipped `{f.name}` — unsupported type .{ext}")
+                    results.append({"File": f.name, "Status": "⏭️ Skipped",
+                                    "Progress": "—", "Note": f"Unsupported: .{ext}"})
+                    with summary_table.container():
+                        st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
                     continue
 
+                # ── Upload file ─────────────────────────────────────────────
+                file_label.info(f"📤 Uploading `{f.name}` ({f.size / 1024:.0f} KB)...")
                 try:
                     resp = requests.post(
                         f"{api_url}/upload",
                         files={"file": (f.name, f.getvalue(), f.type)},
                         data={"project_id": st.session_state.project_id},
-                        timeout=60,  # 60s per file
+                        timeout=60,
                     )
-                    if resp.status_code == 200:
-                        task_id = resp.json()["task_id"]
-                        results.append({"filename": f.name, "task_id": task_id,
-                                        "status": "pending", "message": "Queued."})
-                    else:
-                        results.append({"filename": f.name, "task_id": None,
-                                        "status": "failed",
-                                        "message": resp.text[:80]})
+                    if resp.status_code != 200:
+                        file_label.error(f"❌ Upload failed for `{f.name}`: {resp.text[:80]}")
+                        results.append({"File": f.name, "Status": "❌ Upload failed",
+                                        "Progress": "—", "Note": resp.text[:60]})
+                        with summary_table.container():
+                            st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+                        continue
+                    task_id = resp.json()["task_id"]
+                    file_label.info(f"🔄 Processing `{f.name}` (task `{task_id}`)...")
                 except Exception as e:
-                    results.append({"filename": f.name, "task_id": None,
-                                    "status": "failed", "message": str(e)[:80]})
+                    file_label.error(f"❌ Connection error for `{f.name}`: {e}")
+                    results.append({"File": f.name, "Status": "❌ Connection error",
+                                    "Progress": "—", "Note": str(e)[:60]})
+                    with summary_table.container():
+                        st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+                    continue
 
-            upload_status.empty()
-            queued  = [r for r in results if r["task_id"]]
-            skipped = [r for r in results if r["status"] == "skipped"]
-            failed  = [r for r in results if r["status"] == "failed" and not r["task_id"]]
-
-            upload_bar.progress(1.0, text=f"✅ Upload done: {len(queued)} queued, "
-                                          f"{len(skipped)} skipped, {len(failed)} error")
-
-            if skipped:
-                st.warning("⚠️ Skipped: " + ", ".join(f"`{r['filename']}`" for r in skipped))
-            if failed:
-                st.error("❌ Upload errors: " + ", ".join(f"`{r['filename']}`" for r in failed))
-            if not queued:
-                st.error("No files were queued. Check the errors above.")
-                st.stop()
-
-            st.success(f"**{len(queued)}/{len(uploaded_files)}** files queued — processing concurrently!")
-
-            # ── Live dashboard: poll all tasks until all done ──────────
-            st.markdown("### 📊 Processing Dashboard")
-            status_placeholder = st.empty()
-            all_done = False
-
-            while not all_done:
-                rows = []
-                all_done = True
-                for r in results:
-                    if r["status"] == "skipped":
-                        rows.append({"File": r["filename"], "Status": "⏭️ Skipped",
-                                     "Progress": "—", "Message": r["message"]})
-                        continue
-                    if not r["task_id"]:
-                        rows.append({"File": r["filename"], "Status": "❌ Upload error",
-                                     "Progress": "—", "Message": r["message"]})
-                        continue
+                # ── Poll until this file is done ────────────────────────────
+                while True:
                     try:
-                        sr = requests.get(f"{api_url}/status/{r['task_id']}", timeout=5)
+                        sr = requests.get(f"{api_url}/status/{task_id}", timeout=5)
                         d  = sr.json() if sr.status_code == 200 else {}
                     except Exception:
                         d = {}
+
                     s   = d.get("status", "unknown")
                     pct = d.get("percentage", 0)
                     msg = d.get("message", "")
-                    icon = {"completed": "✅", "failed": "❌", "pending": "⏳",
-                            "parsing": "🔍", "indexing": "📊"}.get(s, "🔄")
-                    rows.append({"File": r["filename"],
-                                 "Status": f"{icon} {s.capitalize()}",
-                                 "Progress": f"{pct:.0f}%",
-                                 "Message": msg[:60]})
-                    if s not in ("completed", "failed"):
-                        all_done = False
+                    logs = d.get("logs", [])
 
-                with status_placeholder.container():
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    # progress bar cho file hiện tại
+                    with file_progress.container():
+                        st.progress(pct / 100, text=f"{f.name} — {msg}")
 
-                if not all_done:
+                    # log box
+                    with log_box.container():
+                        log_html = "".join(f"<div>> {l}</div>" for l in logs[-8:])
+                        st.markdown(f'<div class="log-container">{log_html}</div>',
+                                    unsafe_allow_html=True)
+
+                    if s == "completed":
+                        results.append({"File": f.name, "Status": "✅ Done",
+                                        "Progress": "100%", "Note": ""})
+                        file_label.success(f"✅ `{f.name}` — indexed!")
+                        break
+                    elif s == "failed":
+                        results.append({"File": f.name, "Status": "❌ Failed",
+                                        "Progress": f"{pct:.0f}%",
+                                        "Note": d.get("error", "")[:60]})
+                        file_label.error(f"❌ `{f.name}` — failed: {d.get('error', '')[:60]}")
+                        break
+
                     time.sleep(3)
 
-            done_count = sum(1 for r in rows if "✅" in r["Status"])
-            fail_count = sum(1 for r in rows if "❌" in r["Status"])
-            if fail_count == 0:
+                # Cập nhật bảng tổng kết
+                with summary_table.container():
+                    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+
+            # ── Tổng kết cuối ────────────────────────────────────────────────
+            file_label.empty()
+            file_progress.empty()
+            log_box.empty()
+            overall_bar.progress(1.0, text="All files processed!")
+
+            done_count = sum(1 for r in results if "✅" in r["Status"])
+            fail_count = sum(1 for r in results if "❌" in r["Status"])
+            skip_count = sum(1 for r in results if "⏭️" in r["Status"])
+
+            if fail_count == 0 and skip_count == 0:
                 st.balloons()
                 st.success(f"🎉 All {done_count} files indexed successfully!")
             else:
-                st.warning(f"Done: {done_count} ✅  completed, {fail_count} ❌ failed.")
+                st.info(f"Done: {done_count} ✅  completed | {fail_count} ❌ failed | {skip_count} ⏭️ skipped")
+
 
 
 

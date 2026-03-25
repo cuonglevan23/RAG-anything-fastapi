@@ -320,13 +320,45 @@ Quy tắc bắt buộc:
                 task.logs.append(f"Found existing Markdown at {parsed_md_path}. Skipping parsing.")
 
             elif file_ext in (".docx", ".doc"):
-                # ── DOCX: extract text via python-docx (không cần VLM, không cần PDF) ──
-                task.logs.append(f"DOCX detected — extracting text via python-docx...")
-                import asyncio
-                parsed_md_path = await asyncio.to_thread(
-                    _extract_docx_to_md, file_path, output_dir, file_basename
+                # ── DOCX/DOC: convert sang PDF bằng LibreOffice → feed VLM pipeline ──
+                task.logs.append(f"DOCX detected — converting to PDF via LibreOffice...")
+                import asyncio, subprocess, shutil as _shutil
+
+                def _convert_docx_to_pdf(src: str, out_dir: str) -> str:
+                    """LibreOffice headless convert → trả về path của PDF vừa tạo."""
+                    result = subprocess.run(
+                        ["libreoffice", "--headless", "--convert-to", "pdf",
+                         "--outdir", out_dir, src],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(
+                            f"LibreOffice conversion failed: {result.stderr.strip()}"
+                        )
+                    # LibreOffice tạo file cùng tên nhưng đuôi .pdf
+                    basename = os.path.splitext(os.path.basename(src))[0]
+                    pdf_path = os.path.join(out_dir, basename + ".pdf")
+                    if not os.path.exists(pdf_path):
+                        raise FileNotFoundError(f"Converted PDF not found: {pdf_path}")
+                    return pdf_path
+
+                # temp dir để tránh conflict khi nhiều file cùng tên
+                tmp_dir = os.path.join(output_dir, file_basename, "tmp_pdf")
+                os.makedirs(tmp_dir, exist_ok=True)
+
+                converted_pdf = await asyncio.to_thread(
+                    _convert_docx_to_pdf, file_path, tmp_dir
                 )
-                task.logs.append(f"DOCX extraction done: {parsed_md_path}")
+                task.logs.append(f"Converted to PDF: {converted_pdf} — now processing via VLM...")
+
+                # Feed PDF vào VLM pipeline y hệt file PDF thường
+                async with VLM_SEMAPHORE:
+                    task.logs.append("PDF GPU slot acquired — parsing converted DOCX...")
+                    parsed_md_path = await asyncio.to_thread(
+                        vlm_pipeline.process_pdf, converted_pdf, output_dir, file_basename
+                    )
+                task.logs.append(f"DOCX→PDF→VLM done: {parsed_md_path}")
+
 
             elif file_ext in (".txt", ".md"):
                 # ── TXT/MD: đọc thẳng, không cần bất kỳ parser nào ──
