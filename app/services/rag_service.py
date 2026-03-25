@@ -21,8 +21,8 @@ from app.models.schema import ProcessingStatus
 
 def _extract_docx_to_md(file_path: str, output_dir: str, file_basename: str) -> str:
     """
-    Trích xuất text từ DOCX dùng python-docx → ghi ra file .md.
-    Trả về đường dẫn của markdown file đã tạo.
+    Trích xuất text từ DOCX dùng python-docx high-level API → ghi ra file .md.
+    Hỗ trợ: paragraphs, headings, tables, bold/italic (best-effort).
     Cài đặt: pip install python-docx
     """
     try:
@@ -30,50 +30,71 @@ def _extract_docx_to_md(file_path: str, output_dir: str, file_basename: str) -> 
     except ImportError:
         raise ImportError("Cần cài python-docx: pip install python-docx")
 
-    doc = Document(file_path)
+    doc   = Document(file_path)
     lines = []
 
+    def _para_to_md(para) -> str:
+        """Convert một paragraph thành markdown string."""
+        style = para.style.name if para.style else ""
+        text  = para.text.strip()
+        if not text:
+            return ""
+        # Heading → ## Heading text
+        if style.startswith("Heading"):
+            try:
+                level = int(style.split()[-1])
+            except (ValueError, IndexError):
+                level = 2
+            return f"{'#' * min(level, 6)} {text}"
+        # Title → # Title
+        if style == "Title":
+            return f"# {text}"
+        return text
+
     for block in doc.element.body:
-        tag = block.tag.split("}")[-1]  # "p" hoặc "tbl"
+        tag = block.tag.split("}")[-1]
 
         if tag == "p":
-            # Đoạn văn bản thường hoặc heading
-            from docx.oxml.ns import qn
-            style = block.get(qn("w:styleId"), "")
-            text  = "".join(run.text for run in block.iterchildren()
-                            if run.tag.endswith("}r")
-                            for t in run.iterchildren() if t.tag.endswith("}t"))
-            if not text.strip():
-                lines.append("")
-                continue
-            # Heading → Markdown heading
-            if "Heading" in style or "heading" in style:
-                level = "".join(c for c in style if c.isdigit()) or "1"
-                lines.append(f"{'#' * int(level)} {text.strip()}")
-            else:
-                lines.append(text.strip())
+            # Đoạn văn — dùng python-docx paragraph
+            from docx.text.paragraph import Paragraph as _Para
+            para = _Para(block, doc)
+            md   = _para_to_md(para)
+            lines.append(md)  # "" cho dòng trống — giữ nguyên spacing
 
         elif tag == "tbl":
-            # Bảng → Markdown table
-            from docx.oxml.table import CT_Tbl
-            from docx.table import Table
-            tbl = Table(block, doc)
-            if tbl.rows:
-                header = [cell.text.strip() for cell in tbl.rows[0].cells]
-                lines.append("| " + " | ".join(header) + " |")
-                lines.append("| " + " | ".join(["---"] * len(header)) + " |")
-                for row in tbl.rows[1:]:
-                    lines.append("| " + " | ".join(c.text.strip() for c in row.cells) + " |")
-            lines.append("")
+            # Bảng — dùng python-docx Table
+            from docx.table import Table as _Tbl
+            tbl = _Tbl(block, doc)
+            try:
+                if tbl.rows:
+                    header = [c.text.strip().replace("\n", " ") for c in tbl.rows[0].cells]
+                    lines.append("| " + " | ".join(header) + " |")
+                    lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+                    for row in tbl.rows[1:]:
+                        lines.append("| " + " | ".join(
+                            c.text.strip().replace("\n", " ") for c in row.cells) + " |")
+                    lines.append("")
+            except Exception as te:
+                logger.warning(f"Table extraction warning: {te}")
 
-    md_content = "\n".join(lines)
+    # Loại bỏ nhiều dòng trống liên tiếp
+    md_lines = []
+    prev_empty = False
+    for line in lines:
+        is_empty = (line == "")
+        if is_empty and prev_empty:
+            continue
+        md_lines.append(line)
+        prev_empty = is_empty
+
+    md_content = "\n".join(md_lines).strip()
 
     out_path = os.path.join(output_dir, file_basename, "vlm", f"{file_basename}.md")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(md_content)
 
-    logger.info(f"DOCX extracted → {out_path} ({len(lines)} lines)")
+    logger.info(f"DOCX extracted → {out_path} ({len(md_lines)} lines, {len(md_content)} chars)")
     return out_path
 
 
@@ -321,10 +342,30 @@ Quy tắc bắt buộc:
                 task.logs.append(f"PDF detected — processing via VLM to generate markdown...")
                 vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
                 import asyncio
-                parsed_md_path = await asyncio.to_thread(
-                    vlm_pipeline.process_pdf, file_path, output_dir, file_basename
-                )
-                task.logs.append(f"VLM Parsing finished. Markdown created at: {parsed_md_path}")
+                try:
+                    parsed_md_path = await asyncio.to_thread(
+                        vlm_pipeline.process_pdf, file_path, output_dir, file_basename
+                    )
+                    task.logs.append(f"VLM Parsing finished. Markdown created at: {parsed_md_path}")
+                except Exception as pdf_err:
+                    if "PDFium" in str(pdf_err) or "Data format" in str(pdf_err):
+                        # File bị corrupt hoặc thực ra là DOCX đổi đuôi → thử fallback
+                        task.logs.append(
+                            f"⚠️ PDFium failed ({pdf_err}). Trying python-docx fallback..."
+                        )
+                        try:
+                            parsed_md_path = await asyncio.to_thread(
+                                _extract_docx_to_md, file_path, output_dir, file_basename
+                            )
+                            task.logs.append(f"✅ Fallback DOCX extraction succeeded: {parsed_md_path}")
+                        except Exception as docx_err:
+                            raise RuntimeError(
+                                f"File '{filename}' cannot be parsed as PDF or DOCX. "
+                                f"PDF error: {pdf_err}. DOCX error: {docx_err}"
+                            )
+                    else:
+                        raise
+
 
 
             async with self._lock:
