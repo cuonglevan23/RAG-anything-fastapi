@@ -1,175 +1,137 @@
 """
 preprocess_rotate.py
 ─────────────────────────────────────────────────────────────────────
-Tiền xử lý folder PDF/DOCX: tự động phát hiện và xoay về portrait.
+Tiền xử lý PDF: xoay các trang landscape → portrait.
 
-Cách dùng trong Colab:
-  !pip install pymupdf pytesseract pillow -q
-  !apt-get install -y tesseract-ocr tesseract-ocr-vie -qq
-  !python preprocess_rotate.py --input /content/docs --output /content/docs_fixed
+Cách dùng trong Colab (cell):
+─────────────────────────────────────────────────────────────────────
+import subprocess
+subprocess.run(["python", "/content/RAG-anything-fastapi/preprocess_rotate.py",
+                "--input", "/content/scan",
+                "--output", "/content/scan_fix"])
 
-Nếu không có Tesseract (dùng heuristic nhanh hơn):
-  !python preprocess_rotate.py --input /content/docs --output /content/docs_fixed --no-ocr
+Hoặc chỉnh INPUT_DIR / OUTPUT_DIR rồi chạy thẳng:
+  python preprocess_rotate.py
 ─────────────────────────────────────────────────────────────────────
 """
 
-import os
-import sys
-import argparse
-import shutil
+import os, sys, shutil, argparse
 from pathlib import Path
 from loguru import logger
 
-# ── Cài đặt thư viện cần thiết ──────────────────────────────────────
+# ── Cài nhanh nếu chưa có ──────────────────────────────────────────
 try:
-    import fitz  # PyMuPDF
+    import fitz
 except ImportError:
-    print("Cần cài PyMuPDF: pip install pymupdf")
-    sys.exit(1)
+    os.system("pip install pymupdf -q")
+    import fitz
 
 try:
     from PIL import Image
 except ImportError:
-    print("Cần cài Pillow: pip install pillow")
-    sys.exit(1)
+    os.system("pip install pillow -q")
+    from PIL import Image
 
 
-def detect_rotation_tesseract(pil_img: Image.Image) -> int:
+# ══════════════════════════════════════════════════════════════════
+#  MODEL-BASED ROTATION (Tesseract OSD)
+# ══════════════════════════════════════════════════════════════════
+
+def detect_orientation_osd(page: "fitz.Page") -> int:
     """
-    Dùng Tesseract OSD để phát hiện góc xoay.
-    Trả về góc cần rotate (0, 90, 180, 270).
+    Dùng Tesseract OSD (Orientation and Script Detection) để tìm góc xoay.
+    Trả về góc cần xoay thêm (0, 90, 180, 270).
     """
     try:
         import pytesseract
-        osd = pytesseract.image_to_osd(pil_img, config="--psm 0 -c min_characters_to_try=5")
+        # Render trang ở độ phân giải thấp (72 DPI) để OSD chạy nhanh
+        pix = page.get_pixmap(dpi=72)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+        # Chạy OSD
+        osd = pytesseract.image_to_osd(img)
+        # Output mẫu: "Orientation: 90\nRotate: 270\n..."
         for line in osd.splitlines():
             if "Rotate:" in line:
-                angle = int(line.split(":")[-1].strip())
-                return angle
+                return int(line.split(":")[-1].strip())
     except Exception as e:
-        logger.warning(f"Tesseract OSD failed: {e} → dùng heuristic")
-    return -1  # không phát hiện được
+        # Nếu không có tesseract hoặc lỗi, fallback về 0 (không xoay)
+        return 0
+    return 0
 
 
-def detect_rotation_heuristic(pil_img: Image.Image) -> int:
+def fix_one_pdf(src: str, dst: str, use_model: bool = True) -> int:
     """
-    Heuristic đơn giản: nếu ảnh nằm ngang (width > height * 1.3) → xoay 90° CW.
-    Phù hợp cho tài liệu hành chính/pháp lý Việt Nam (luôn portrait).
+    Xoay tất cả trang của PDF về đúng chiều dựa trên model OSD hoặc heuristic.
     """
-    w, h = pil_img.size
-    if w > h * 1.3:
-        return 90   # landscape → cần xoay 90° CW
-    if h > w * 1.3:
-        return 0    # đã là portrait
-    return 0        # gần vuông → giữ nguyên
+    doc     = fitz.open(src)
+    rotated = 0
 
+    for i, page in enumerate(doc):
+        angle = 0
+        if use_model:
+            angle = detect_orientation_osd(page)
 
-def fix_pdf_rotation(input_path: str, output_path: str, use_ocr: bool = True) -> dict:
-    """
-    Xử lý 1 file PDF: detect rotation từng trang → rotate → lưu ra output_path.
-    Trả về dict thống kê.
-    """
-    doc = fitz.open(input_path)
-    stats = {"pages": len(doc), "rotated": 0, "unchanged": 0}
+        # Nếu model không tìm thấy (angle=0) nhưng page đang nằm ngang (landscape)
+        # thì vẫn có thể dùng heuristic làm cứu cánh cuối cùng
+        if angle == 0:
+            w, h = page.rect.width, page.rect.height
+            curr_rot = page.rotation
+            if curr_rot in (90, 270): w, h = h, w
+            if w > h * 1.15: # Landscape
+                angle = 270 # Mặc định xoay 90 độ CW
 
-    for page_num, page in enumerate(doc):
-        # 1. Kiểm tra rotation trong PDF metadata trước
-        meta_rot = page.rotation
-        if meta_rot != 0:
-            # Đã có rotation metadata → normalize về 0
-            page.set_rotation(0)
-            # Và rotate content ngược lại
-            page.set_rotation(meta_rot)
-            page.set_rotation(0)
-            stats["rotated"] += 1
-            logger.info(f"  Page {page_num+1}: PDF metadata rotation={meta_rot}° → fixed")
-            continue
+        if angle != 0:
+            # Set rotation tuyệt đối trong PDF
+            # page.rotation là góc hiện tại, angle là góc cần xoay để về 0
+            new_rot = (page.rotation + angle) % 360
+            page.set_rotation(new_rot)
+            logger.info(f"  Page {i+1}: Orientation model suggests +{angle}° → set_rotation({new_rot})")
+            rotated += 1
 
-        # 2. Render trang thành ảnh để phân tích
-        mat  = fitz.Matrix(1.5, 1.5)  # scale 1.5x để Tesseract chính xác hơn
-        clip = page.get_pixmap(matrix=mat)
-        pil_img = Image.frombytes("RGB", [clip.width, clip.height], clip.samples)
-
-        # 3. Detect rotation
-        angle = -1
-        if use_ocr:
-            angle = detect_rotation_tesseract(pil_img)
-
-        if angle == -1:  # fallback heuristic
-            angle = detect_rotation_heuristic(pil_img)
-
-        if angle in (90, 180, 270):
-            # PyMuPDF: set_rotation dùng góc clockwise
-            page.set_rotation(angle)
-            stats["rotated"] += 1
-            logger.info(f"  Page {page_num+1}: detected {angle}° rotation → corrected")
-        else:
-            stats["unchanged"] += 1
-
-    # Lưu file đã sửa
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    doc.save(output_path, garbage=4, deflate=True)
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    doc.save(dst, garbage=4, deflate=True)
     doc.close()
-    return stats
+    return rotated
 
 
-def process_folder(input_dir: str, output_dir: str, use_ocr: bool = True):
-    """
-    Xử lý toàn bộ folder: PDF → rotate → lưu vào output_dir.
-    Non-PDF files được copy sang output_dir không thay đổi.
-    """
-    input_path  = Path(input_dir)
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+def process_folder(input_dir: str, output_dir: str, use_model: bool = True):
+    src = Path(input_dir)
+    dst = Path(output_dir)
+    dst.mkdir(parents=True, exist_ok=True)
 
-    files = list(input_path.iterdir())
-    pdf_files   = [f for f in files if f.suffix.lower() == ".pdf"]
-    other_files = [f for f in files if f.suffix.lower() != ".pdf" and f.is_file()]
+    pdfs   = sorted(src.glob("*.pdf")) + sorted(src.glob("*.PDF"))
+    others = [f for f in src.iterdir() if f.is_file() and f.suffix.lower() != ".pdf"]
 
-    logger.info(f"Found {len(pdf_files)} PDFs + {len(other_files)} other files in {input_dir}")
+    logger.info(f"📂 Input : {src}  ({len(pdfs)} PDFs)")
+    logger.info(f"📂 Output: {dst}")
+    logger.info(f"🧠 Mode  : {'Tesseract OSD (Model)' if use_model else 'Heuristic Only'}")
+    logger.info("─" * 60)
 
     total_rotated = 0
-    total_pages   = 0
-
-    for i, pdf_file in enumerate(pdf_files, 1):
-        out_file = output_path / pdf_file.name
-        logger.info(f"[{i}/{len(pdf_files)}] Processing: {pdf_file.name}")
+    for i, pdf in enumerate(pdfs, 1):
+        out = dst / pdf.name
+        logger.info(f"[{i}/{len(pdfs)}] {pdf.name}")
         try:
-            stats = fix_pdf_rotation(str(pdf_file), str(out_file), use_ocr=use_ocr)
-            total_pages   += stats["pages"]
-            total_rotated += stats["rotated"]
-            logger.info(
-                f"  ✅ Done: {stats['pages']} pages, "
-                f"{stats['rotated']} rotated, {stats['unchanged']} unchanged"
-            )
+            n = fix_one_pdf(str(pdf), str(out), use_model=use_model)
+            total_rotated += n
+            logger.info(f"  ✅ {n} page(s) fixed")
         except Exception as e:
-            logger.error(f"  ❌ Failed: {e} — copying original")
-            shutil.copy2(str(pdf_file), str(out_file))
+            logger.error(f"  ❌ Error: {e} — copying original")
+            shutil.copy2(pdf, out)
 
-    # Copy file không phải PDF nguyên vẹn
-    for f in other_files:
-        shutil.copy2(str(f), str(output_path / f.name))
-        logger.info(f"Copied (non-PDF): {f.name}")
+    for f in others:
+        shutil.copy2(f, dst / f.name)
 
     logger.info("─" * 60)
-    logger.info(f"✅ DONE: {len(pdf_files)} PDFs processed")
-    logger.info(f"   Total pages: {total_pages}")
-    logger.info(f"   Pages rotated/fixed: {total_rotated}")
-    logger.info(f"   Output folder: {output_dir}")
+    logger.info(f"✅ Preprocessing Done. {total_rotated} pages fixed.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Auto-rotate PDF preprocessing tool")
-    parser.add_argument("--input",  required=True, help="Folder chứa PDF gốc")
-    parser.add_argument("--output", required=True, help="Folder lưu PDF đã sửa")
-    parser.add_argument("--no-ocr", action="store_true",
-                        help="Dùng heuristic thay vì Tesseract OSD (nhanh hơn)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input",  required=True, help="Folder PDF gốc")
+    parser.add_argument("--output", required=True, help="Folder PDF đầu ra")
+    parser.add_argument("--no-model", action="store_true", help="Tắt model OSD, chỉ dùng heuristic")
     args = parser.parse_args()
 
-    use_ocr = not args.no_ocr
-    if use_ocr:
-        logger.info("Mode: Tesseract OSD + heuristic fallback")
-    else:
-        logger.info("Mode: Heuristic only (nhanh, không cần Tesseract)")
-
-    process_folder(args.input, args.output, use_ocr=use_ocr)
+    process_folder(args.input, args.output, use_model=not args.no_model)
