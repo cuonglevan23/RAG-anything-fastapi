@@ -18,11 +18,9 @@ from app.core.config import settings
 from app.models.schema import ProcessingStatus
 # test comment for commit
 
-
 def _extract_docx_to_md(file_path: str, output_dir: str, file_basename: str) -> str:
     """
-    Trích xuất text từ DOCX dùng python-docx high-level API → ghi ra file .md.
-    Hỗ trợ: paragraphs, headings, tables, bold/italic (best-effort).
+    Trích xuất text từ DOCX dùng python-docx high-level API.
     Cài đặt: pip install python-docx
     """
     try:
@@ -33,49 +31,54 @@ def _extract_docx_to_md(file_path: str, output_dir: str, file_basename: str) -> 
     doc   = Document(file_path)
     lines = []
 
-    def _para_to_md(para) -> str:
-        """Convert một paragraph thành markdown string."""
-        style = para.style.name if para.style else ""
-        text  = para.text.strip()
-        if not text:
-            return ""
-        # Heading → ## Heading text
-        if style.startswith("Heading"):
-            try:
-                level = int(style.split()[-1])
-            except (ValueError, IndexError):
-                level = 2
-            return f"{'#' * min(level, 6)} {text}"
-        # Title → # Title
-        if style == "Title":
-            return f"# {text}"
-        return text
+    # --- xuất tết cả paragraphs theo đúng thứ tự trong document ---
+    # Ta dùng doc.paragraphs + doc.tables nhưng để giữ đúng thứ tự
+    # (paragraph xen kẽ bảng) ta iterate doc.element.body như cũ nhưng
+    # lấy nội dung qua python-docx objects
 
-    for block in doc.element.body:
-        tag = block.tag.split("}")[-1]
+    para_idx  = 0
+    table_idx = 0
+
+    for child in doc.element.body:
+        tag = child.tag.split("}")[-1]
 
         if tag == "p":
-            # Đoạn văn — dùng python-docx paragraph
-            from docx.text.paragraph import Paragraph as _Para
-            para = _Para(block, doc)
-            md   = _para_to_md(para)
-            lines.append(md)  # "" cho dòng trống — giữ nguyên spacing
+            if para_idx < len(doc.paragraphs):
+                para  = doc.paragraphs[para_idx]
+                para_idx += 1
+                text  = para.text  # FULL text, kể cả runs
+                style = para.style.name if para.style else ""
+
+                if not text.strip():
+                    lines.append("")
+                    continue
+
+                if style.startswith("Heading"):
+                    try:
+                        lvl = int(style.split()[-1])
+                    except (ValueError, IndexError):
+                        lvl = 2
+                    lines.append(f"{'#' * min(lvl, 6)} {text.strip()}")
+                elif style == "Title":
+                    lines.append(f"# {text.strip()}")
+                else:
+                    lines.append(text.strip())
 
         elif tag == "tbl":
-            # Bảng — dùng python-docx Table
-            from docx.table import Table as _Tbl
-            tbl = _Tbl(block, doc)
-            try:
-                if tbl.rows:
-                    header = [c.text.strip().replace("\n", " ") for c in tbl.rows[0].cells]
-                    lines.append("| " + " | ".join(header) + " |")
-                    lines.append("| " + " | ".join(["---"] * len(header)) + " |")
-                    for row in tbl.rows[1:]:
-                        lines.append("| " + " | ".join(
-                            c.text.strip().replace("\n", " ") for c in row.cells) + " |")
-                    lines.append("")
-            except Exception as te:
-                logger.warning(f"Table extraction warning: {te}")
+            if table_idx < len(doc.tables):
+                tbl = doc.tables[table_idx]
+                table_idx += 1
+                try:
+                    if tbl.rows:
+                        header = [c.text.strip().replace("\n", " ") for c in tbl.rows[0].cells]
+                        lines.append("| " + " | ".join(header) + " |")
+                        lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+                        for row in tbl.rows[1:]:
+                            lines.append("| " + " | ".join(
+                                c.text.strip().replace("\n", " ") for c in row.cells) + " |")
+                        lines.append("")
+                except Exception as te:
+                    logger.warning(f"Table extraction warning: {te}")
 
     # Loại bỏ nhiều dòng trống liên tiếp
     md_lines = []
@@ -96,6 +99,12 @@ def _extract_docx_to_md(file_path: str, output_dir: str, file_basename: str) -> 
 
     logger.info(f"DOCX extracted → {out_path} ({len(md_lines)} lines, {len(md_content)} chars)")
     return out_path
+
+
+# Semaphore giới hạn chỉ 1 VLM model chạy tại một thời điểm → tránh CUDA OOM
+# DOCX/TXT được xuất nằm ngoài semaphore → vẫn chạy song song
+VLM_SEMAPHORE: asyncio.Semaphore = asyncio.Semaphore(1)
+
 
 
 class RAGService:
@@ -329,23 +338,27 @@ Quy tắc bắt buộc:
 
             elif file_ext in (".png", ".jpg", ".jpeg", ".webp"):
                 # ── Image: dùng VLM để mô tả ──
-                task.logs.append(f"Image detected — processing via VLM...")
+                task.logs.append(f"Image detected — waiting for GPU slot...")
                 vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
                 import asyncio
-                parsed_md_path = await asyncio.to_thread(
-                    vlm_pipeline.process_pdf, file_path, output_dir, file_basename
-                )
+                async with VLM_SEMAPHORE:   # ← chỉ 1 GPU task cùng lúc
+                    task.logs.append(f"Image GPU slot acquired — processing via VLM...")
+                    parsed_md_path = await asyncio.to_thread(
+                        vlm_pipeline.process_pdf, file_path, output_dir, file_basename
+                    )
                 task.logs.append(f"VLM Parsing finished: {parsed_md_path}")
 
             else:
                 # ── PDF và các định dạng khác: dùng VLM pipeline ──
-                task.logs.append(f"PDF detected — processing via VLM to generate markdown...")
+                task.logs.append(f"PDF detected — waiting for GPU slot...")
                 vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
                 import asyncio
                 try:
-                    parsed_md_path = await asyncio.to_thread(
-                        vlm_pipeline.process_pdf, file_path, output_dir, file_basename
-                    )
+                    async with VLM_SEMAPHORE:   # ← chỉ 1 GPU task cùng lúc
+                        task.logs.append(f"PDF GPU slot acquired — parsing...")
+                        parsed_md_path = await asyncio.to_thread(
+                            vlm_pipeline.process_pdf, file_path, output_dir, file_basename
+                        )
                     task.logs.append(f"VLM Parsing finished. Markdown created at: {parsed_md_path}")
                 except Exception as pdf_err:
                     if "PDFium" in str(pdf_err) or "Data format" in str(pdf_err):
