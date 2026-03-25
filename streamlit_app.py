@@ -107,57 +107,162 @@ tab1, tab2, tab3 = st.tabs(["📤 Upload & Process", "💬 Chat with RAG", "📊
 # TAB 1 — Upload & Process
 # ============================================================================
 with tab1:
-    st.header("Document Upload")
-    uploaded_file = st.file_uploader(
-        "Choose a file (PDF, TXT, DOCX, MD, Images)",
-        type=["pdf", "txt", "docx", "md", "png", "jpg", "jpeg"]
+    st.header("📁 Document Upload")
+
+    # ── Upload mode toggle ──────────────────────────────────────
+    upload_mode = st.radio(
+        "Upload mode",
+        ["Single file", "Multiple files (folder)"],
+        horizontal=True,
+        key="upload_mode",
     )
 
-    if uploaded_file is not None:
-        if st.button("🚀 Start Processing"):
-            with st.status("Uploading file...", expanded=True) as status:
+    if upload_mode == "Single file":
+        uploaded_files = st.file_uploader(
+            "Choose a file (PDF, TXT, DOCX, MD, Images)",
+            type=["pdf", "txt", "docx", "doc", "md", "png", "jpg", "jpeg"],
+            accept_multiple_files=False,
+        )
+        uploaded_files = [uploaded_files] if uploaded_files else []
+    else:
+        uploaded_files = st.file_uploader(
+            "Choose multiple files — select all files from your folder at once",
+            type=["pdf", "txt", "docx", "doc", "md", "png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+        )
+        if uploaded_files:
+            st.info(f"📂 **{len(uploaded_files)} file(s)** selected: "
+                    + ", ".join(f"`{f.name}`" for f in uploaded_files[:5])
+                    + ("..." if len(uploaded_files) > 5 else ""))
+
+    # ── Upload button ────────────────────────────────────────────
+    if uploaded_files and st.button("🚀 Start Processing", type="primary"):
+
+        # ── SINGLE FILE: use original /upload endpoint ──────────
+        if len(uploaded_files) == 1:
+            file_obj = uploaded_files[0]
+            with st.status(f"Processing `{file_obj.name}`...", expanded=True) as status:
                 try:
-                    files        = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                    data_payload = {"project_id": st.session_state.project_id}
-                    response     = requests.post(f"{api_url}/upload", files=files, data=data_payload)
-
-                    if response.status_code == 200:
-                        data    = response.json()
-                        task_id = data["task_id"]
-                        st.success(f"File uploaded! Task ID: {task_id}")
-
-                        progress_bar    = st.progress(0, text="Initializing processing...")
+                    resp = requests.post(
+                        f"{api_url}/upload",
+                        files={"file": (file_obj.name, file_obj.getvalue(), file_obj.type)},
+                        data={"project_id": st.session_state.project_id},
+                    )
+                    if resp.status_code == 200:
+                        task_id = resp.json()["task_id"]
+                        st.success(f"Uploaded! Task: `{task_id}`")
+                        progress_bar    = st.progress(0, text="Initializing...")
                         log_placeholder = st.empty()
-
                         while True:
-                            status_resp = requests.get(f"{api_url}/status/{task_id}")
-                            if status_resp.status_code == 200:
-                                s_data         = status_resp.json()
-                                percentage     = s_data.get("percentage", 0) / 100
-                                current_status = s_data.get("status")
-                                logs           = s_data.get("logs", [])
-
-                                progress_bar.progress(percentage, text=f"Status: {s_data.get('message')}")
+                            sr = requests.get(f"{api_url}/status/{task_id}")
+                            if sr.status_code == 200:
+                                d = sr.json()
+                                progress_bar.progress(d.get("percentage", 0) / 100,
+                                                      text=f"Status: {d.get('message')}")
                                 with log_placeholder.container():
-                                    st.markdown("**Processing Logs:**")
-                                    log_html = "".join([f"<div>> {log}</div>" for log in logs])
-                                    st.markdown(f'<div class="log-container">{log_html}</div>', unsafe_allow_html=True)
-
-                                if current_status == "completed":
+                                    st.markdown("**Logs:**")
+                                    log_html = "".join(f"<div>> {l}</div>" for l in d.get("logs", []))
+                                    st.markdown(f'<div class="log-container">{log_html}</div>',
+                                                unsafe_allow_html=True)
+                                if d.get("status") == "completed":
                                     st.balloons()
-                                    status.update(label="Processing Complete!", state="complete", expanded=False)
+                                    status.update(label="✅ Complete!", state="complete", expanded=False)
                                     break
-                                elif current_status == "failed":
-                                    st.error(f"Processing failed: {s_data.get('error')}")
-                                    status.update(label="Processing Failed", state="error", expanded=True)
+                                elif d.get("status") == "failed":
+                                    st.error(f"Failed: {d.get('error')}")
+                                    status.update(label="❌ Failed", state="error")
                                     break
                             time.sleep(2)
                     else:
-                        st.error(f"Error: {response.text}")
+                        st.error(f"Upload error: {resp.text}")
                         status.update(label="Upload Failed", state="error")
                 except Exception as e:
-                    st.error(f"Connection Error: {str(e)}")
+                    st.error(f"Connection error: {e}")
                     status.update(label="Connection Error", state="error")
+
+        # ── BATCH FILES: use /upload_batch endpoint ─────────────
+        else:
+            st.info(f"Uploading **{len(uploaded_files)}** files to workspace "
+                    f"`{st.session_state.project_id}`...")
+            try:
+                multi_files = [
+                    ("files", (f.name, f.getvalue(), f.type))
+                    for f in uploaded_files
+                ]
+                batch_resp = requests.post(
+                    f"{api_url}/upload_batch",
+                    files=multi_files,
+                    data={"project_id": st.session_state.project_id},
+                )
+                if batch_resp.status_code != 200:
+                    st.error(f"Batch upload error: {batch_resp.text}")
+                    st.stop()
+
+                batch_data = batch_resp.json()
+                results    = batch_data["results"]
+                task_ids   = {r["filename"]: r["task_id"] for r in results if r["task_id"]}
+                skipped    = [r for r in results if r["status"] == "skipped"]
+
+                if skipped:
+                    st.warning("⚠️ Skipped files (unsupported/too large): "
+                               + ", ".join(f"`{r['filename']}`" for r in skipped))
+
+                st.success(f"✅ **{len(task_ids)}/{len(uploaded_files)}** files queued "
+                           "— processing concurrently...")
+
+                # ── Live dashboard: poll all tasks until all done ──
+                st.markdown("### 📊 Processing Dashboard")
+                status_placeholder = st.empty()
+                all_done = False
+
+                while not all_done:
+                    rows = []
+                    all_done = True
+                    for r in results:
+                        if r["status"] == "skipped":
+                            rows.append({"File": r["filename"], "Status": "⏭️ Skipped",
+                                         "Progress": "—", "Message": r["message"]})
+                            continue
+                        tid = r["task_id"]
+                        try:
+                            sr = requests.get(f"{api_url}/status/{tid}", timeout=5)
+                            d  = sr.json() if sr.status_code == 200 else {}
+                        except Exception:
+                            d = {}
+                        s = d.get("status", "unknown")
+                        pct = d.get("percentage", 0)
+                        msg = d.get("message", "")
+                        icon = {"completed": "✅", "failed": "❌", "pending": "⏳",
+                                "parsing": "🔍", "indexing": "📊"}.get(s, "🔄")
+                        rows.append({"File": r["filename"],
+                                     "Status": f"{icon} {s.capitalize()}",
+                                     "Progress": f"{pct:.0f}%",
+                                     "Message": msg[:60]})
+                        if s not in ("completed", "failed"):
+                            all_done = False
+
+                    with status_placeholder.container():
+                        st.dataframe(
+                            pd.DataFrame(rows),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+                    if not all_done:
+                        time.sleep(3)
+
+                # Final summary
+                completed_count = sum(1 for r in rows if "✅" in r["Status"])
+                failed_count    = sum(1 for r in rows if "❌" in r["Status"])
+                if failed_count == 0:
+                    st.balloons()
+                    st.success(f"🎉 All {completed_count} files indexed successfully!")
+                else:
+                    st.warning(f"Done: {completed_count} ✅ completed, {failed_count} ❌ failed.")
+
+            except Exception as e:
+                st.error(f"Batch upload connection error: {e}")
+
 
 # ============================================================================
 # TAB 2 — Chat with RAG

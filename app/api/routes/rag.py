@@ -1,9 +1,10 @@
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from typing import List
 from app.models.schema import (
     QueryRequest, QueryResponse, UploadResponse, ProcessingStatus,
-    ProjectListResponse, EvalQueryRequest, EvalQueryResponse
+    ProjectListResponse, EvalQueryRequest, EvalQueryResponse, BatchUploadResponse
 )
 from app.services.rag_service import rag_service
 from app.core.config import settings
@@ -117,3 +118,73 @@ async def query_eval(request: EvalQueryRequest):
     except Exception as e:
         logger.error(f"Eval query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload_batch", response_model=BatchUploadResponse)
+async def upload_batch(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    project_id: str = Form(...),
+):
+    """
+    Upload nhiều file cùng lúc (từ 1 folder) vào 1 workspace.
+    Mỗi file được xử lý độc lập theo background task riêng.
+    Trả về danh sách task_id để poll tiến trình từng file.
+    """
+    results = []
+
+    for file in files:
+        extension = Path(file.filename).suffix.lower()
+
+        # Validate extension per file — skip unsupported, report lỗi
+        if extension not in settings.ALLOWED_EXTENSIONS:
+            logger.warning(f"Batch upload: skipping unsupported file '{file.filename}'")
+            results.append({
+                "filename": file.filename,
+                "task_id": None,
+                "status": "skipped",
+                "message": f"Unsupported file type: {extension}",
+            })
+            continue
+
+        # Validate size per file
+        contents = await file.read()
+        if len(contents) > settings.MAX_FILE_SIZE:
+            results.append({
+                "filename": file.filename,
+                "task_id": None,
+                "status": "skipped",
+                "message": f"File too large: {len(contents) / 1024 / 1024:.1f}MB > {settings.MAX_FILE_SIZE / 1024 / 1024}MB limit",
+            })
+            continue
+
+        # Save to disk
+        file_path = settings.UPLOADS_DIR / file.filename
+        file_path.write_bytes(contents)
+
+        # Create task and fire background processing
+        task_id = rag_service.create_task(file.filename, project_id)
+        background_tasks.add_task(
+            rag_service.process_document,
+            task_id=task_id,
+            file_path=str(file_path),
+            filename=file.filename,
+            project_id=project_id,
+        )
+
+        results.append({
+            "filename": file.filename,
+            "task_id": task_id,
+            "status": "pending",
+            "message": "Queued for processing.",
+        })
+        logger.info(f"Batch upload: '{file.filename}' queued → task {task_id}")
+
+    accepted = sum(1 for r in results if r["status"] == "pending")
+    logger.info(f"Batch upload: {accepted}/{len(files)} files accepted for workspace '{project_id}'")
+
+    return BatchUploadResponse(
+        project_id=project_id,
+        total=len(files),
+        results=results,
+    )

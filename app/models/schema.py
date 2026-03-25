@@ -48,3 +48,9 @@ class UploadResponse(BaseModel):
 
 class ProjectListResponse(BaseModel):
     projects: List[str]
+
+class BatchUploadResponse(BaseModel):
+    """Response for batch upload — one entry per file"""
+    project_id: str
+    total: int
+    results: List[Dict[str, Any]]   # [{filename, task_id, status, message}]
