@@ -17,7 +17,68 @@ from lightrag.kg.shared_storage import set_default_workspace
 from app.core.config import settings
 from app.models.schema import ProcessingStatus
 # test comment for commit
+
+
+def _extract_docx_to_md(file_path: str, output_dir: str, file_basename: str) -> str:
+    """
+    Trích xuất text từ DOCX dùng python-docx → ghi ra file .md.
+    Trả về đường dẫn của markdown file đã tạo.
+    Cài đặt: pip install python-docx
+    """
+    try:
+        from docx import Document
+    except ImportError:
+        raise ImportError("Cần cài python-docx: pip install python-docx")
+
+    doc = Document(file_path)
+    lines = []
+
+    for block in doc.element.body:
+        tag = block.tag.split("}")[-1]  # "p" hoặc "tbl"
+
+        if tag == "p":
+            # Đoạn văn bản thường hoặc heading
+            from docx.oxml.ns import qn
+            style = block.get(qn("w:styleId"), "")
+            text  = "".join(run.text for run in block.iterchildren()
+                            if run.tag.endswith("}r")
+                            for t in run.iterchildren() if t.tag.endswith("}t"))
+            if not text.strip():
+                lines.append("")
+                continue
+            # Heading → Markdown heading
+            if "Heading" in style or "heading" in style:
+                level = "".join(c for c in style if c.isdigit()) or "1"
+                lines.append(f"{'#' * int(level)} {text.strip()}")
+            else:
+                lines.append(text.strip())
+
+        elif tag == "tbl":
+            # Bảng → Markdown table
+            from docx.oxml.table import CT_Tbl
+            from docx.table import Table
+            tbl = Table(block, doc)
+            if tbl.rows:
+                header = [cell.text.strip() for cell in tbl.rows[0].cells]
+                lines.append("| " + " | ".join(header) + " |")
+                lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+                for row in tbl.rows[1:]:
+                    lines.append("| " + " | ".join(c.text.strip() for c in row.cells) + " |")
+            lines.append("")
+
+    md_content = "\n".join(lines)
+
+    out_path = os.path.join(output_dir, file_basename, "vlm", f"{file_basename}.md")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(md_content)
+
+    logger.info(f"DOCX extracted → {out_path} ({len(lines)} lines)")
+    return out_path
+
+
 class RAGService:
+
     def __init__(self):
         self.instances: Dict[str, RAGAnything] = {}
         self.tasks: Dict[str, ProcessingStatus] = {}
@@ -217,23 +278,54 @@ Quy tắc bắt buộc:
             
             # Khởi tạo pipeline và process
             vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
-            
+
             file_basename = os.path.splitext(os.path.basename(file_path))[0]
-            project_dir = os.path.abspath(settings.BASE_RAG_DIR / project_id)
-            output_dir = project_dir # Save VLM outputs into the project dir
-            
+            project_dir   = os.path.abspath(settings.BASE_RAG_DIR / project_id)
+            output_dir    = project_dir
+            file_ext      = os.path.splitext(file_path)[1].lower()
+
             parsed_md_path = os.path.join(output_dir, file_basename, "vlm", f"{file_basename}.md")
-            
+
             if os.path.exists(parsed_md_path):
-                task.logs.append(f"Found existing Markdown at {parsed_md_path}. Skipping VLM Parsing.")
+                task.logs.append(f"Found existing Markdown at {parsed_md_path}. Skipping parsing.")
+
+            elif file_ext in (".docx", ".doc"):
+                # ── DOCX: extract text via python-docx (không cần VLM, không cần PDF) ──
+                task.logs.append(f"DOCX detected — extracting text via python-docx...")
+                import asyncio
+                parsed_md_path = await asyncio.to_thread(
+                    _extract_docx_to_md, file_path, output_dir, file_basename
+                )
+                task.logs.append(f"DOCX extraction done: {parsed_md_path}")
+
+            elif file_ext in (".txt", ".md"):
+                # ── TXT/MD: đọc thẳng, không cần bất kỳ parser nào ──
+                task.logs.append(f"Plain text detected — reading directly...")
+                os.makedirs(os.path.dirname(parsed_md_path), exist_ok=True)
+                import shutil
+                shutil.copy2(file_path, parsed_md_path)
+                task.logs.append(f"Plain text copied to: {parsed_md_path}")
+
+            elif file_ext in (".png", ".jpg", ".jpeg", ".webp"):
+                # ── Image: dùng VLM để mô tả ──
+                task.logs.append(f"Image detected — processing via VLM...")
+                vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
+                import asyncio
+                parsed_md_path = await asyncio.to_thread(
+                    vlm_pipeline.process_pdf, file_path, output_dir, file_basename
+                )
+                task.logs.append(f"VLM Parsing finished: {parsed_md_path}")
+
             else:
-                task.logs.append("No Markdown found, processing PDF via VLM to generate markdown...")
-                # Chạy process_pdf trong thread pool để không block FastAPI event loop (tránh timeout)
+                # ── PDF và các định dạng khác: dùng VLM pipeline ──
+                task.logs.append(f"PDF detected — processing via VLM to generate markdown...")
+                vlm_pipeline = CustomOpenAIPipeline(api_key=settings.OPENAI_API_KEY)
                 import asyncio
                 parsed_md_path = await asyncio.to_thread(
                     vlm_pipeline.process_pdf, file_path, output_dir, file_basename
                 )
                 task.logs.append(f"VLM Parsing finished. Markdown created at: {parsed_md_path}")
+
 
             async with self._lock:
                 task.percentage = 40.0

@@ -180,88 +180,109 @@ with tab1:
                     st.error(f"Connection error: {e}")
                     status.update(label="Connection Error", state="error")
 
-        # ── BATCH FILES: use /upload_batch endpoint ─────────────
+        # ── BATCH FILES: upload từng file qua /upload, collect task_ids ──
         else:
-            st.info(f"Uploading **{len(uploaded_files)}** files to workspace "
-                    f"`{st.session_state.project_id}`...")
-            try:
-                multi_files = [
-                    ("files", (f.name, f.getvalue(), f.type))
-                    for f in uploaded_files
-                ]
-                batch_resp = requests.post(
-                    f"{api_url}/upload_batch",
-                    files=multi_files,
-                    data={"project_id": st.session_state.project_id},
-                )
-                if batch_resp.status_code != 200:
-                    st.error(f"Batch upload error: {batch_resp.text}")
-                    st.stop()
+            st.markdown(f"### 📤 Uploading {len(uploaded_files)} files to `{st.session_state.project_id}`")
+            upload_bar   = st.progress(0, text="Preparing...")
+            upload_status = st.empty()
+            results      = []
 
-                batch_data = batch_resp.json()
-                results    = batch_data["results"]
-                task_ids   = {r["filename"]: r["task_id"] for r in results if r["task_id"]}
-                skipped    = [r for r in results if r["status"] == "skipped"]
+            for i, f in enumerate(uploaded_files, 1):
+                upload_bar.progress(i / len(uploaded_files),
+                                    text=f"Uploading {i}/{len(uploaded_files)}: {f.name}")
+                upload_status.info(f"📤 `{f.name}` ({f.size / 1024:.0f} KB)")
 
-                if skipped:
-                    st.warning("⚠️ Skipped files (unsupported/too large): "
-                               + ", ".join(f"`{r['filename']}`" for r in skipped))
+                ext = f.name.rsplit(".", 1)[-1].lower() if "." in f.name else ""
+                if ext not in ["pdf", "txt", "docx", "doc", "md", "png", "jpg", "jpeg"]:
+                    results.append({"filename": f.name, "task_id": None,
+                                    "status": "skipped", "message": f"Unsupported: .{ext}"})
+                    continue
 
-                st.success(f"✅ **{len(task_ids)}/{len(uploaded_files)}** files queued "
-                           "— processing concurrently...")
+                try:
+                    resp = requests.post(
+                        f"{api_url}/upload",
+                        files={"file": (f.name, f.getvalue(), f.type)},
+                        data={"project_id": st.session_state.project_id},
+                        timeout=60,  # 60s per file
+                    )
+                    if resp.status_code == 200:
+                        task_id = resp.json()["task_id"]
+                        results.append({"filename": f.name, "task_id": task_id,
+                                        "status": "pending", "message": "Queued."})
+                    else:
+                        results.append({"filename": f.name, "task_id": None,
+                                        "status": "failed",
+                                        "message": resp.text[:80]})
+                except Exception as e:
+                    results.append({"filename": f.name, "task_id": None,
+                                    "status": "failed", "message": str(e)[:80]})
 
-                # ── Live dashboard: poll all tasks until all done ──
-                st.markdown("### 📊 Processing Dashboard")
-                status_placeholder = st.empty()
-                all_done = False
+            upload_status.empty()
+            queued  = [r for r in results if r["task_id"]]
+            skipped = [r for r in results if r["status"] == "skipped"]
+            failed  = [r for r in results if r["status"] == "failed" and not r["task_id"]]
 
-                while not all_done:
-                    rows = []
-                    all_done = True
-                    for r in results:
-                        if r["status"] == "skipped":
-                            rows.append({"File": r["filename"], "Status": "⏭️ Skipped",
-                                         "Progress": "—", "Message": r["message"]})
-                            continue
-                        tid = r["task_id"]
-                        try:
-                            sr = requests.get(f"{api_url}/status/{tid}", timeout=5)
-                            d  = sr.json() if sr.status_code == 200 else {}
-                        except Exception:
-                            d = {}
-                        s = d.get("status", "unknown")
-                        pct = d.get("percentage", 0)
-                        msg = d.get("message", "")
-                        icon = {"completed": "✅", "failed": "❌", "pending": "⏳",
-                                "parsing": "🔍", "indexing": "📊"}.get(s, "🔄")
-                        rows.append({"File": r["filename"],
-                                     "Status": f"{icon} {s.capitalize()}",
-                                     "Progress": f"{pct:.0f}%",
-                                     "Message": msg[:60]})
-                        if s not in ("completed", "failed"):
-                            all_done = False
+            upload_bar.progress(1.0, text=f"✅ Upload done: {len(queued)} queued, "
+                                          f"{len(skipped)} skipped, {len(failed)} error")
 
-                    with status_placeholder.container():
-                        st.dataframe(
-                            pd.DataFrame(rows),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
+            if skipped:
+                st.warning("⚠️ Skipped: " + ", ".join(f"`{r['filename']}`" for r in skipped))
+            if failed:
+                st.error("❌ Upload errors: " + ", ".join(f"`{r['filename']}`" for r in failed))
+            if not queued:
+                st.error("No files were queued. Check the errors above.")
+                st.stop()
 
-                    if not all_done:
-                        time.sleep(3)
+            st.success(f"**{len(queued)}/{len(uploaded_files)}** files queued — processing concurrently!")
 
-                # Final summary
-                completed_count = sum(1 for r in rows if "✅" in r["Status"])
-                failed_count    = sum(1 for r in rows if "❌" in r["Status"])
-                if failed_count == 0:
-                    st.balloons()
-                    st.success(f"🎉 All {completed_count} files indexed successfully!")
-                else:
-                    st.warning(f"Done: {completed_count} ✅ completed, {failed_count} ❌ failed.")
+            # ── Live dashboard: poll all tasks until all done ──────────
+            st.markdown("### 📊 Processing Dashboard")
+            status_placeholder = st.empty()
+            all_done = False
 
-            except Exception as e:
-                st.error(f"Batch upload connection error: {e}")
+            while not all_done:
+                rows = []
+                all_done = True
+                for r in results:
+                    if r["status"] == "skipped":
+                        rows.append({"File": r["filename"], "Status": "⏭️ Skipped",
+                                     "Progress": "—", "Message": r["message"]})
+                        continue
+                    if not r["task_id"]:
+                        rows.append({"File": r["filename"], "Status": "❌ Upload error",
+                                     "Progress": "—", "Message": r["message"]})
+                        continue
+                    try:
+                        sr = requests.get(f"{api_url}/status/{r['task_id']}", timeout=5)
+                        d  = sr.json() if sr.status_code == 200 else {}
+                    except Exception:
+                        d = {}
+                    s   = d.get("status", "unknown")
+                    pct = d.get("percentage", 0)
+                    msg = d.get("message", "")
+                    icon = {"completed": "✅", "failed": "❌", "pending": "⏳",
+                            "parsing": "🔍", "indexing": "📊"}.get(s, "🔄")
+                    rows.append({"File": r["filename"],
+                                 "Status": f"{icon} {s.capitalize()}",
+                                 "Progress": f"{pct:.0f}%",
+                                 "Message": msg[:60]})
+                    if s not in ("completed", "failed"):
+                        all_done = False
+
+                with status_placeholder.container():
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                if not all_done:
+                    time.sleep(3)
+
+            done_count = sum(1 for r in rows if "✅" in r["Status"])
+            fail_count = sum(1 for r in rows if "❌" in r["Status"])
+            if fail_count == 0:
+                st.balloons()
+                st.success(f"🎉 All {done_count} files indexed successfully!")
+            else:
+                st.warning(f"Done: {done_count} ✅  completed, {fail_count} ❌ failed.")
+
 
 
 # ============================================================================
