@@ -52,7 +52,7 @@ rag_storage*/
 examples/input/
 examples/output/
 output*/
-report*/
+report/
 
 # Miscellaneous
 .DS_Store
