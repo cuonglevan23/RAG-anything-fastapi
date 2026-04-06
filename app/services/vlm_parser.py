@@ -199,9 +199,10 @@ class CustomOpenAIPipeline:
             start_page = time.time()
             logger.info(f"VLM Parsing Page {i + 1}/{len(pil_images)}")
             
-            # Step 1: Layout Detection (GPU - Sequential)
+            # Step 1: Layout Detection (GPU - Run in thread to avoid blocking event loop)
             try:
-                layout_blocks = self.mineru_client.two_step_extract(image)
+                # Chạy MinerU (CPU/GPU bound) in thread pool
+                layout_blocks = await asyncio.to_thread(self.mineru_client.two_step_extract, image)
             except Exception as e:
                 logger.error(f"MinerU layout analysis failed: {e}")
                 layout_blocks = []

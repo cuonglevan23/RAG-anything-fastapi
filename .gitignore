@@ -47,10 +47,12 @@ neo4jWorkDir/
 
 # Data & Storage
 inputs/
+uploads/
 rag_storage*/
 examples/input/
 examples/output/
 output*/
+report*/
 
 # Miscellaneous
 .DS_Store
