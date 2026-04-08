@@ -54,6 +54,7 @@ examples/output/
 output*/
 report/
 
+
 # Miscellaneous
 .DS_Store
 TODO.md
